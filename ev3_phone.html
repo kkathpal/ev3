@@ -77,6 +77,10 @@
   .stop { grid-area: 2 / 2; border-radius: 50%; background: var(--bad); color: var(--bg); font-weight: 900;
     letter-spacing: .04em; box-shadow: 0 0 0 6px #ff636333; touch-action: none; }
   .stop:active { transform: scale(.94); }
+  .horn { grid-area: 3 / 3; align-self: center; justify-self: center; width: 78%; aspect-ratio: 1;
+    border-radius: 50%; background: var(--track); color: var(--warn); font-size: 11px; font-weight: 700;
+    letter-spacing: .04em; border: 1px solid var(--line); touch-action: none; }
+  .horn:active { background: var(--warn); color: var(--bg); transform: scale(.94); }
 
   .gears { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
   .gear { padding: 10px 4px; border: 1px solid transparent; text-align: center; }
@@ -133,6 +137,7 @@
       <button class="stop" id="stop">STOP</button>
       <div class="key k-right" data-dir="right"><svg viewBox="0 0 24 24"><path d="M20 12 6 21V3z"/></svg></div>
       <div class="key k-down" data-dir="down"><svg viewBox="0 0 24 24"><path d="M12 20 3 6h18z"/></svg></div>
+      <button class="horn" id="horn">HORN</button>
     </div>
     <div class="gears" id="gears"></div>
     <div class="warn" id="warn"></div>
@@ -229,6 +234,7 @@ document.querySelectorAll(".key").forEach(k => {
 function releaseAll() { pointers.clear(); keys.clear(); recompute(); post("/stop", {}); }
 $("stop").addEventListener("pointerdown", e => { e.preventDefault(); releaseAll(); });
 $("reset").addEventListener("click", () => post("/reset", {}));
+$("horn").addEventListener("pointerdown", e => { e.preventDefault(); post("/horn", {}); });
 document.addEventListener("contextmenu", e => e.preventDefault());
 document.addEventListener("visibilitychange", () => { if (document.hidden) releaseAll(); });
 window.addEventListener("blur", releaseAll);
@@ -239,6 +245,7 @@ const KEYMAP = { ArrowUp: "up", w: "up", ArrowDown: "down", s: "down", ArrowLeft
 addEventListener("keydown", e => {
   if (KEYMAP[e.key]) { e.preventDefault(); keys.add(KEYMAP[e.key]); recompute(); }
   else if (e.key === " ") releaseAll();
+  else if (e.key === "h" && !e.repeat) post("/horn", {});
   else if ("1234".includes(e.key) && e.key && window._modes) setMode(window._modes[+e.key - 1].name);
 });
 addEventListener("keyup", e => { if (KEYMAP[e.key]) { keys.delete(KEYMAP[e.key]); recompute(); } });

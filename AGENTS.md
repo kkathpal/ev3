@@ -11,7 +11,8 @@ are hand-drawn `tkinter`. No build step.
 |---|---|
 | `ev3_drive.pyw` | **EV3 RC**: drive a two-motor robot from the keyboard like an RC car, with a live dashboard (speedometer, wheel meters, trip, battery, latency) and a calibration card. Holds all the shared drive logic. |
 | `ev3_phone.py` + `ev3_phone.html` | Phone controller: a small HTTP server on the PC (port 8080) serving a touch page. **Imports `ev3_drive.pyw`** (`SourceFileLoader`) and reuses its `Brick`, `wheel_commands`, `send_drive`, constants and settings. |
-| `ev3_widget.pyw` | **EV3 Status** widget: always-on-top window showing battery, CPU/RAM, ports, motors, sensors; jog motors, switch sensor modes, free memory (sudo), stop the running program. Independent of the other files. |
+| `ev3_widget.pyw` | **EV3 Status** widget: always-on-top window showing battery, CPU/RAM, ports, motors, sensors; jog motors, switch sensor modes, free memory (sudo), stop the running program; Sound card (play built-in/uploaded WAVs, text-to-speech, volume, upload). Independent of the other files. |
+| `ev3_sound.py` | Sound commands, sound-list query/parsing and WAV upload, shared by the drive app and the widget (each builds its own Sound card UI). |
 | `ev3_config.py` | Loads `ev3_config.json` (brick address + SSH login) for all three apps. |
 | `tests/test_drive.py` | Offline tests for the drive logic (fake brick, fake clock). |
 | `ev3_drive_settings.json` | Created at runtime, git-ignored. Motor ports, per-wheel invert, drift trim, last gear. Written by the desktop app, read (and `mode` written) by the phone server. |
@@ -61,6 +62,18 @@ brick that stops all motors if the Turbo heartbeat goes stale for `WATCHDOG_CS` 
 Gears live in `MODES` (name, % of `MAX_SPEED`). ev3dev rejects `speed_sp` above the motor's
 `max_speed`, hence `MOTOR_LIMIT` (1050) as the clamp and the full-power scale.
 
+## Sound
+
+The brick has `aplay`, `espeak`, `beep` and `amixer` (mixer control `PCM`); no MP3 player.
+Built-in effects are WAVs under `/usr/share/sounds/ev3dev/<group>/`; uploads go over SFTP to
+`~/sounds`. All of this lives in `ev3_sound.py`: `QUERY` (prints `vol=` and `sounds=`, run by the
+widget's `info()` and by `Brick.query_sounds()` after connecting), `play`/`say`/`STOP`/`set_volume`/
+`horn` command strings, and `upload()`. Sound commands go to the same command shell as motor
+commands, so they always run in the background (`( … ) &`) or they would delay driving.
+`Brick.horn()` (H key, HORN button, phone `/horn`) skips the horn if `aplay` is already running,
+because a held key repeats. In EV3 RC, key events from the Say text box are ignored by the drive
+key handlers, so typing never drives the robot.
+
 ## Rules that must hold
 
 - **Every way of moving a motor must stop by itself** if the PC app dies, the window loses focus,
@@ -85,6 +98,14 @@ Gears live in `MODES` (name, % of `MAX_SPEED`). ev3dev rejects `speed_sp` above 
 - Windows-only calls (`ctypes.windll`, DWM title bar, DPI awareness) stay inside `try/except` so
   macOS and Linux still run. On macOS the apps set `tk scaling` so sizes match Windows, and the
   widget's menu is on Button-2 / Control-click instead of Button-3.
+- Windows must fit a 1920×1080 screen at 150% scaling (about 720 logical px tall): cards can be
+  folded by clicking their title, and `_fit_screen()` folds the least-needed ones at startup
+  (drive app: Setup then Sound, or Sound first on a first run; widget: Activity then System).
+  Keep new UI inside a foldable card, and check the height after adding anything.
+- The widget is borderless (`overrideredirect`) on Windows only; elsewhere that would block
+  keyboard focus. A missing `paramiko` shows a message box, since `.pyw` files have no console.
+- Tests or scripts that create `DriveApp` save `ev3_drive_settings.json` (the user's real
+  calibration). Patch `save_settings` too, or back the file up first.
 - Key releases in `ev3_drive.pyw` are delayed by `KEY_RELEASE_MS` and cancelled by an immediate
   press: macOS/Linux Tk auto-repeat sends release+press pairs, which would otherwise brake and
   restart the ramp many times a second. Windows only repeats presses.

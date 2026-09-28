@@ -12,22 +12,32 @@ The brick's address and login are in ev3_config.json (see ev3_config.py).
 
 Drag the title bar to move it. Right-click for options.
 Hold ◀ / ▶ next to a motor to run it; release to stop. ⟳ next to a sensor switches its mode.
+SOUND plays the brick's built-in effects or your own WAV files (Upload… copies them to
+~/sounds on the brick), speaks typed text, and sets the volume.
 The memory buttons run as root via sudo, using the robot user's password.
 """
 import collections
 import ctypes
 import math
+import os
 import queue
 import shlex
 import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 
-import paramiko
+try:
+    import paramiko
+except ImportError:   # a double-clicked .pyw has no console, so say it in a window
+    tk.Tk().withdraw()
+    messagebox.showerror("EV3", "The 'paramiko' package is missing.\n\nInstall it once with:\n"
+                                "    python -m pip install -r requirements.txt")
+    sys.exit(1)
 
 import ev3_config
+import ev3_sound
 
 CONFIG = ev3_config.load()
 HOST, USER, PASSWORD = CONFIG["host"], CONFIG["user"], CONFIG["password"]
@@ -58,6 +68,7 @@ info() {
   echo "ip=$(hostname -I)"
   echo "disk=$(df -k / | awk 'NR==2{print $2, $3}')"
   read t < $B/technology; echo "bat_type=$t"
+""" + ev3_sound.QUERY + r"""
   echo __END__
 }
 poll() {
@@ -244,6 +255,11 @@ class Poller(threading.Thread):
         self.actions.put(name)
         self.wake.set()
 
+    def upload(self, local_path):
+        """Queue copying a WAV file to the brick's sounds folder (runs on this thread)."""
+        self.actions.put(("upload", local_path))
+        self.wake.set()
+
     def send(self, cmd):
         """Fire-and-forget command on the brick (called from the UI thread)."""
         ctl = self.ctl
@@ -300,6 +316,10 @@ class Poller(threading.Thread):
                     polls = 0
                 while not self.actions.empty():
                     name = self.actions.get()
+                    if isinstance(name, tuple):   # ("upload", local path)
+                        self.out.put(("uploaded", ev3_sound.upload(self.client, name[1])))
+                        polls = 0   # re-read info so the new sound shows up in the list
+                        continue
                     result = dict(line.split("=", 1) for line in self._run(action_script(name)).split()
                                   if "=" in line)
                     self.out.put(("action", (name, result)))
@@ -580,7 +600,9 @@ class Widget(tk.Tk):
             self.tk.call("tk", "scaling", 96 / 72)
         SCALE = self.winfo_fpixels("1i") / 96
         self.title("EV3 Status")
-        self.overrideredirect(True)
+        # Borderless on Windows only: on macOS/Linux such windows can't take keyboard focus
+        # (the Say box would be dead) and can't be moved by the window manager.
+        self.overrideredirect(sys.platform == "win32")
         self.attributes("-topmost", True)
         self.configure(bg=BG, highlightthickness=1, highlightbackground=LINE)
         self.topmost = tk.BooleanVar(value=True)
@@ -590,19 +612,26 @@ class Widget(tk.Tk):
         self.action_msg = ("", 0.0)
         self.data = {"motors": {}, "sensors": {}}
         self.jog = None   # (port, after-id) while a motor button is held
+        self.sounds = []     # full paths of the WAVs on the brick
+        self.sound = None    # the picked one
+        self.volume = None   # % once read from the brick; ours to change after that
+        self.home = None     # the robot user's home folder on the brick
         self.dot_color = MUTED
         self.pulse_t = 0.0
 
         self.poller = Poller(self.queue)
+        self.cards = {}   # title -> (frame, head, title label), for folding
 
         self._build_header()
         self._build_gauges()
         self._build_activity()
         self._build_stats()
         self._build_program()
+        self._build_sound()
         self._build_ports()
         self._build_footer()
         self._build_menu()
+        self._fit_screen()
 
         self.update_idletasks()
         x = self.winfo_screenwidth() - self.winfo_reqwidth() - px(24)
@@ -629,10 +658,39 @@ class Widget(tk.Tk):
         if title:
             head = tk.Frame(frame, bg=CARD)
             head.pack(fill="x", pady=(0, px(6)))
-            tk.Label(head, text=title.upper(), bg=CARD, fg=MUTED, font=FONT_CAPS).pack(side="left")
+            label = tk.Label(head, text="▾  " + title.upper(), bg=CARD, fg=MUTED, font=FONT_CAPS,
+                             cursor="hand2")
+            label.pack(side="left")
+            label.bind("<Button-1>", lambda e: self._fold(frame, head, label))
+            self.cards[title] = (frame, head, label)
             if right:
                 right(head)
         return frame
+
+    def _fold(self, frame, head, label):
+        """Click a card's title to hide or show everything under it (for small screens)."""
+        folded = getattr(frame, "folded", None)
+        if folded:
+            for w, info in folded:
+                w.pack(**info)
+            frame.folded = None
+            head.pack_configure(pady=(0, px(6)))
+        else:
+            frame.folded = [(w, w.pack_info()) for w in frame.winfo_children()
+                            if w is not head and w.winfo_manager() == "pack"]
+            for w, _ in frame.folded:
+                w.pack_forget()
+            head.pack_configure(pady=0)
+        title = label.cget("text")[3:]
+        label.configure(text=("▾  " if folded else "▸  ") + title)
+
+    def _fit_screen(self):
+        """Fold the least-needed cards while the window is taller than the screen."""
+        for title in ("Activity", "System"):
+            self.update_idletasks()
+            if self.winfo_reqheight() <= self.winfo_screenheight() - px(96):
+                return
+            self._fold(*self.cards[title])
 
     def _build_header(self):
         self.strip = tk.Canvas(self, height=px(3), bg=BG, highlightthickness=0)
@@ -732,6 +790,41 @@ class Widget(tk.Tk):
         stop.pack(side="right")
         stop.bind("<Enter>", lambda e: self._hint("Stop the running robot program"), add="+")
         self.buttons["stop"] = stop
+
+    def _build_sound(self):
+        def volume(head):
+            plus = mini_button(head, "+")
+            plus.pack(side="right")
+            self.vol_label = tk.Label(head, text="–", bg=CARD, fg=FG, font=FONT_NUM, width=4)
+            self.vol_label.pack(side="right")
+            minus = mini_button(head, "−")
+            minus.pack(side="right")
+            tk.Label(head, text="VOLUME", bg=CARD, fg=DIM, font=FONT_CAPS).pack(side="right", padx=(0, px(6)))
+            minus.bind("<Button-1>", lambda e: self._change_volume(-ev3_sound.VOLUME_STEP))
+            plus.bind("<Button-1>", lambda e: self._change_volume(ev3_sound.VOLUME_STEP))
+        f = self._card("Sound", volume)
+
+        row = tk.Frame(f, bg=CARD)
+        row.pack(fill="x")
+        self.sound_pick = Pill(row, "Pick a sound  ▾", self._sound_menu, bg=TILE, font=FONT_SMALL, anchor="w")
+        self.sound_pick.pack(side="left", fill="x", expand=True)
+        play = Pill(row, "▶ Play", self._play_sound, bg=blend(GOOD, CARD, 0.6),
+                    hover=blend(GOOD, CARD, 0.4), font=FONT_SMALL)
+        play.pack(side="left", padx=(px(6), 0))
+        Pill(row, "■", self._stop_sound, font=FONT_SMALL).pack(side="left", padx=(px(4), 0))
+
+        row = tk.Frame(f, bg=CARD)
+        row.pack(fill="x", pady=(px(6), 0))
+        self.say_text = tk.StringVar()
+        entry = tk.Entry(row, textvariable=self.say_text, bg=TILE, fg=FG, insertbackground=FG,
+                         relief="flat", highlightthickness=0, font=FONT_SMALL)
+        entry.pack(side="left", fill="x", expand=True, ipady=px(4))
+        entry.bind("<Return>", lambda e: self._say())
+        entry.bind("<Enter>", lambda e: self._hint("Type something for the robot to say, then Enter"))
+        Pill(row, "Say", self._say, font=FONT_SMALL).pack(side="left", padx=(px(6), 0))
+        upload = Pill(row, "Upload…", self._upload_sound, font=FONT_SMALL)
+        upload.pack(side="left", padx=(px(4), 0))
+        upload.bind("<Enter>", lambda e: self._hint("Copy a .wav file from this computer to the brick"), add="+")
 
     def _build_ports(self):
         f = self._card("Ports")
@@ -848,6 +941,74 @@ class Widget(tk.Tk):
         self.footer.configure(text=text)
         self.action_msg = (text, time.time() + seconds)
 
+    # ---------- sound ----------
+    def _sound_menu(self):
+        if not self.sounds:
+            self._hint("No sounds yet: waiting for the brick")
+            return
+        menu = tk.Menu(self, tearoff=0)
+        for group, paths in ev3_sound.grouped(self.sounds):
+            sub = tk.Menu(menu, tearoff=0)
+            for path in paths:
+                sub.add_command(label=ev3_sound.name(path), command=lambda p=path: self._pick_sound(p))
+            menu.add_cascade(label=group, menu=sub)
+        w = self.sound_pick
+        menu.tk_popup(w.winfo_rootx(), w.winfo_rooty() + w.winfo_height())
+
+    def _pick_sound(self, path, play=True):
+        self.sound = path
+        self.sound_pick.configure(text=f"{ev3_sound.group(path)} · {ev3_sound.name(path)}  ▾")
+        if play:
+            self._play_sound()
+
+    def _play_sound(self):
+        if self.sound is None:
+            self._sound_menu()
+            return
+        self.poller.send(ev3_sound.play(self.sound))
+        self._hint(f"Playing {ev3_sound.name(self.sound)}")
+
+    def _stop_sound(self):
+        self.poller.send(ev3_sound.STOP)
+
+    def _say(self):
+        text = self.say_text.get().strip()
+        if not text:
+            self._hint("Type something for the robot to say first")
+            return
+        if self.home:   # keep it, so it joins "my sounds" and ▶ Play / P replays it
+            cmd, path = ev3_sound.say_and_keep(text, self.home)
+            self.poller.send(cmd)
+            if path not in self.sounds:
+                self.sounds.append(path)
+            self._pick_sound(path, play=False)
+            self._hint(f"Saying “{text}” · saved to my sounds")
+        else:
+            self.poller.send(ev3_sound.say(text))
+            self._hint(f"Saying “{text}”")
+
+    def _change_volume(self, delta):
+        if self.volume is None:
+            return
+        self.volume = max(0, min(100, self.volume + delta))
+        self.vol_label.configure(text=f"{self.volume}%")
+        self.poller.send(ev3_sound.set_volume(self.volume))
+
+    def _upload_sound(self):
+        path = filedialog.askopenfilename(parent=self, title="Upload a sound to the EV3",
+                                          filetypes=[("WAV sound", "*.wav"), ("All files", "*.*")])
+        if not path:
+            return
+        self._hint(f"Uploading {os.path.basename(path)}…", 120)
+        self.poller.upload(path)
+
+    def _uploaded(self, path, message):
+        if path:
+            if path not in self.sounds:
+                self.sounds.append(path)
+            self._pick_sound(path, play=False)   # ready for ▶ Play
+        self._hint(message, 6)
+
     # ---------- memory buttons ----------
     def _do_action(self, name):
         if name == "stop" and not messagebox.askyesno(
@@ -890,6 +1051,8 @@ class Widget(tk.Tk):
                     self._show(payload)
                 elif kind == "action":
                     self._action_done(*payload)
+                elif kind == "uploaded":
+                    self._uploaded(*payload)
                 elif kind == "status":
                     self._set_dot(WARN)
                     self.footer.configure(text=payload)
@@ -941,6 +1104,14 @@ class Widget(tk.Tk):
         st["Uptime"].configure(text=fmt_uptime(d["uptime"]))
         st["IP"].configure(text=(d.get("ip") or "–").split()[0])
         st["OS"].configure(text=f"{d.get('os', '–').replace('ev3dev-', '')} · {d.get('kernel', '').split('-')[0]}")
+
+        if d.get("sounds"):
+            sounds = d["sounds"].split()
+            self.sounds = sounds + [s for s in self.sounds if s not in sounds]   # keep fresh uploads
+        self.home = d.get("home") or self.home
+        if self.volume is None and d.get("vol", "").isdigit():
+            self.volume = int(d["vol"])
+            self.vol_label.configure(text=f"{self.volume}%")
 
         prog = d.get("program") or ""
         self.program.configure(text="/".join(prog.split("/")[-2:]) if prog else "none",

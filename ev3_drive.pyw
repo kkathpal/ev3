@@ -19,6 +19,8 @@ Keys (the window must be focused):
   Up+Left etc. curve             Space       stop
   1 2 3 4     Slow / Normal / Fast / Turbo gear
   + / -       next / previous gear
+  H           horn
+  P           play the sound picked in the SOUND card
 
 Turbo drives the motors at raw power (run-direct duty cycle) instead of a regulated
 speed: a little faster, but the wheels are no longer speed-matched, so it may drift.
@@ -41,10 +43,18 @@ import sys
 import threading
 import time
 import tkinter as tk
+from tkinter import filedialog, messagebox
 
-import paramiko
+try:
+    import paramiko
+except ImportError:   # a double-clicked .pyw has no console, so say it in a window
+    tk.Tk().withdraw()
+    messagebox.showerror("EV3", "The 'paramiko' package is missing.\n\nInstall it once with:\n"
+                                "    python -m pip install -r requirements.txt")
+    sys.exit(1)
 
 import ev3_config
+import ev3_sound
 
 CONFIG = ev3_config.load()
 HOST, USER, PASSWORD = CONFIG["host"], CONFIG["user"], CONFIG["password"]
@@ -265,6 +275,14 @@ class Brick:
             'read u _ < /proc/uptime; echo "${u%.*}${u#*.}" > $HB; '
             f"echo {left_duty} > {left_path}/duty_cycle_sp; echo {right_duty} > {right_path}/duty_cycle_sp; "
             f"echo run-direct > {left_path}/command; echo run-direct > {right_path}/command")
+
+    def horn(self):
+        return self.send(ev3_sound.horn())
+
+    def query_sounds(self):
+        """(volume %, [sound paths]) from the brick, on a channel of its own."""
+        _, out, _ = self.client.exec_command(ev3_sound.QUERY, timeout=20)
+        return ev3_sound.parse(out.read().decode(errors="replace"))
 
     def stop(self, released=False):
         """Stop every motor, not just the selected pair (the selection may have just changed).
@@ -619,10 +637,12 @@ class DriveApp(tk.Tk):
 
         self.brick = Brick()
         self.held = set()                 # directions currently held
-        self.pending_release = {}         # direction -> after() id of a delayed key release
+        self.pending_release = {}         # direction (or "play") -> after() id of a delayed key release
+        self.play_held = False            # P is down: play once, not on every auto-repeat
         self.moving = False
         self.tick_id = None
         settings = load_settings()
+        self.first_run = not settings     # nothing calibrated yet on this computer
         mode = settings.get("mode", "Normal")
         self.mode = tk.StringVar(value=mode if mode in dict(MODES) else "Normal")
         self.left_port = tk.StringVar(value=settings.get("left", DEFAULT_LEFT))
@@ -642,8 +662,17 @@ class DriveApp(tk.Tk):
         self.last_reading_time = None
         self.status = ("Connecting…", WARN)
         self.stop_event = threading.Event()
+        self.sound_info = None     # (volume, [paths]) fetched after connecting, for the UI thread
+        self.upload_result = None  # (path, message) from an upload thread, for the UI thread
+        self.sounds = []
+        self.sound = None
+        self.volume = None
+        self.home = None           # the robot user's home folder on the brick
+        self.sound_note_id = None
+        self.cards = {}            # title -> (card, head, title label), for folding
 
         self._build()
+        self._fit_screen()
         self.bind("<KeyPress>", self._key_down)
         self.bind("<KeyRelease>", self._key_up)
         self.bind("<FocusOut>", lambda e: self._release_all())
@@ -672,6 +701,39 @@ class DriveApp(tk.Tk):
         f = tk.Frame(self, bg=CARD, padx=px(12), pady=px(10))
         f.pack(fill="x", padx=px(10), pady=(0, px(8)), **pack)
         return f
+
+    def _foldable(self, card, head, title):
+        """Card title that hides/shows everything under it when clicked (for small screens)."""
+        label = tk.Label(head, text="▾  " + title, bg=CARD, fg=MUTED, font=FONT_CAPS, cursor="hand2")
+        label.pack(side="left")
+        label.bind("<Button-1>", lambda e: self._fold(card, head, label))
+        self.cards[title] = (card, head, label)
+
+    def _fold(self, card, head, label):
+        folded = getattr(card, "folded", None)
+        if folded:
+            for w, info in folded:
+                w.pack(**info)
+            card.folded = None
+            head.pack_configure(pady=(0, px(6)))
+        else:
+            card.folded = [(w, w.pack_info()) for w in card.winfo_children()
+                           if w is not head and w.winfo_manager() == "pack"]
+            for w, _ in card.folded:
+                w.pack_forget()
+            head.pack_configure(pady=0)
+        label.configure(text=("▾  " if folded else "▸  ") + label.cget("text")[3:])
+        self.focus_set()   # keep the keyboard on driving
+
+    def _fit_screen(self):
+        """Fold Setup, then Sound, while the window is taller than the screen. On a first
+        run Setup is what's needed, so Sound goes first."""
+        order = ("SETUP · CALIBRATE", "SOUND")
+        for title in reversed(order) if self.first_run else order:
+            self.update_idletasks()
+            if self.winfo_reqheight() <= self.winfo_screenheight() - px(110):
+                return
+            self._fold(*self.cards[title])
 
     def _build(self):
         strip = tk.Canvas(self, height=px(3), bg=BG, highlightthickness=0)
@@ -748,14 +810,16 @@ class DriveApp(tk.Tk):
                 w.bind("<Button-1>", lambda e, m=name: self.mode.set(m))
             self.mode_buttons[name] = (b, num, txt, n, p)
 
+        self._build_sound()
+
         # setup: which motor is which, which way it turns, and drift correction
         setup = self._card()
         head = tk.Frame(setup, bg=CARD)
         head.pack(fill="x", pady=(0, px(6)))
-        tk.Label(head, text="SETUP · CALIBRATE", bg=CARD, fg=MUTED, font=FONT_CAPS).pack(side="left")
+        self._foldable(setup, head, "SETUP · CALIBRATE")
         Pill(head, "⇄ Swap sides", self._swap_sides, font=FONT_SMALL, padx=px(8), pady=px(2)).pack(
             side="right")
-        grid = tk.Frame(setup, bg=CARD)
+        grid = self.setup_grid = tk.Frame(setup, bg=CARD)
         grid.pack(fill="x")
         self.port_menus, self.motor_labels = {}, {}
         for i, (name, var, inv, side) in enumerate((("Left wheel", self.left_port, self.invert_l, "left"),
@@ -797,11 +861,53 @@ class DriveApp(tk.Tk):
         self._trim_changed(save=False)
         self.mode.trace_add("write", lambda *a: self._mode_changed())
 
-        tk.Label(self, text="Arrows / WASD to drive  ·  1–4 = gear  ·  Space = stop",
+        tk.Label(self, text="Arrows / WASD to drive  ·  1–4 = gear  ·  H = horn  ·  P = play sound  ·  Space = stop",
                  bg=BG, fg=MUTED, font=FONT_SMALL).pack(pady=(0, px(10)))
+
+    def _build_sound(self):
+        """Sound card: built-in/uploaded sounds, horn, speech and volume (see ev3_sound)."""
+        f = self._card()
+        head = tk.Frame(f, bg=CARD)
+        head.pack(fill="x", pady=(0, px(6)))
+        self._foldable(f, head, "SOUND")
+        Pill(head, "+", lambda: self._change_volume(ev3_sound.VOLUME_STEP), font=FONT_SMALL,
+             padx=px(7), pady=px(1)).pack(side="right")
+        self.vol_label = tk.Label(head, text="–", bg=CARD, fg=FG, font=FONT_NUM, width=4)
+        self.vol_label.pack(side="right")
+        Pill(head, "−", lambda: self._change_volume(-ev3_sound.VOLUME_STEP), font=FONT_SMALL,
+             padx=px(7), pady=px(1)).pack(side="right")
+        tk.Label(head, text="VOLUME", bg=CARD, fg=DIM, font=FONT_CAPS).pack(side="right", padx=(0, px(6)))
+
+        row = tk.Frame(f, bg=CARD)
+        row.pack(fill="x")
+        self.sound_pick = Pill(row, "Pick a sound  ▾", self._sound_menu, font=FONT_SMALL, anchor="w",
+                               pady=px(4))
+        self.sound_pick.pack(side="left", fill="x", expand=True)
+        Pill(row, "▶ Play", self._play_sound, bg=blend(GOOD, CARD, 0.6), font=FONT_SMALL,
+             pady=px(4)).pack(side="left", padx=(px(6), 0))
+        Pill(row, "■", self._stop_sound, font=FONT_SMALL, pady=px(4)).pack(side="left", padx=(px(4), 0))
+        Pill(row, "HORN", self.brick.horn, bg=blend(WARN, CARD, 0.72), fg=WARN, font=FONT_SMALL,
+             pady=px(4)).pack(side="left", padx=(px(4), 0))
+
+        row = tk.Frame(f, bg=CARD)
+        row.pack(fill="x", pady=(px(6), 0))
+        self.say_text = tk.StringVar()
+        self.say_entry = tk.Entry(row, textvariable=self.say_text, bg=TILE, fg=FG, insertbackground=FG,
+                                  relief="flat", highlightthickness=0, font=FONT_SMALL)
+        self.say_entry.pack(side="left", fill="x", expand=True, ipady=px(4))
+        self.say_entry.bind("<Return>", lambda e: self._say())
+        self.say_entry.bind("<Escape>", lambda e: self.focus_set())
+        Pill(row, "Say", self._say, font=FONT_SMALL, pady=px(4)).pack(side="left", padx=(px(6), 0))
+        Pill(row, "Upload…", self._upload_sound, font=FONT_SMALL, pady=px(4)).pack(
+            side="left", padx=(px(4), 0))
+        self.sound_note = tk.Label(f, text="Type above and press Enter to make the robot talk (it's kept in my sounds)",
+                                   bg=CARD, fg=DIM, font=FONT_SMALL, anchor="w")
+        self.sound_note.pack(fill="x", pady=(px(4), 0))
 
     # ---------- input ----------
     def _key_down(self, event):
+        if event.widget is self.say_entry:   # typing for Say, not driving
+            return
         if event.keysym == "space":
             self._release_all()
         elif event.keysym in KEYS:
@@ -809,6 +915,14 @@ class DriveApp(tk.Tk):
             if direction in self.pending_release:   # auto-repeat, not a real release
                 self.after_cancel(self.pending_release.pop(direction))
             self._press(direction)
+        elif event.keysym in ("h", "H"):
+            self.brick.horn()
+        elif event.keysym in ("p", "P"):
+            if "play" in self.pending_release:   # auto-repeat on macOS/Linux
+                self.after_cancel(self.pending_release.pop("play"))
+            elif not self.play_held:              # auto-repeat on Windows
+                self._play_sound()
+            self.play_held = True
         elif not event.char:   # Shift, Ctrl, ... ("" is "in" every string below)
             return
         elif event.char in "1234"[:len(MODES)]:
@@ -820,6 +934,13 @@ class DriveApp(tk.Tk):
             self.mode.set(names[i])
 
     def _key_up(self, event):
+        if event.widget is self.say_entry:
+            return
+        if event.keysym in ("p", "P"):   # delayed like the drive keys below, so holding P plays once
+            self.pending_release["play"] = self.after(
+                KEY_RELEASE_MS, lambda: (self.pending_release.pop("play", None),
+                                         setattr(self, "play_held", False)))
+            return
         # Holding a key on macOS/Linux auto-repeats as release+press pairs, which would
         # brake and restart the ramp many times a second. Release a moment later instead;
         # a press that follows at once cancels it.
@@ -844,6 +965,7 @@ class DriveApp(tk.Tk):
         for after_id in self.pending_release.values():
             self.after_cancel(after_id)
         self.pending_release.clear()
+        self.play_held = False
         self.held.clear()
         self._tick()
         self.brick.stop()   # always, even if we think we're already stopped
@@ -878,6 +1000,10 @@ class DriveApp(tk.Tk):
                     self.status = ("Connecting…", WARN)
                     self.brick.connect()
                     self.status = ("Connected", GOOD)
+                    try:
+                        self.sound_info = self.brick.query_sounds()
+                    except Exception:
+                        pass   # sound list is optional; driving still works
                 self.readings = self.brick.read_motors()
                 self.reading_seq += 1
             except Exception as e:
@@ -898,6 +1024,7 @@ class DriveApp(tk.Tk):
         if self.reading_seq != self.seen_seq:
             self.seen_seq = self.reading_seq
             self._new_reading()
+        self._sound_updates()
         self.speedo.animate()
         self.meter_l.animate()
         self.meter_r.animate()
@@ -996,7 +1123,13 @@ class DriveApp(tk.Tk):
         else:
             warning = ""
         self.port_warning.configure(text=warning)
-        self.port_warning.pack(anchor="w") if warning else self.port_warning.pack_forget()
+        if warning:
+            card, head, label = self.cards["SETUP · CALIBRATE"]
+            if getattr(card, "folded", None):
+                self._fold(card, head, label)   # the fix is in there: show it
+            self.port_warning.pack(anchor="w", after=self.setup_grid)
+        else:
+            self.port_warning.pack_forget()
         self._settings_changed()
 
     def _settings_changed(self):
@@ -1051,6 +1184,100 @@ class DriveApp(tk.Tk):
         if self.held:
             self._tick()   # apply the new speed immediately while driving
         self._settings_changed()
+
+    # ---------- sound ----------
+    def _note(self, text, seconds=4):
+        """Show a message under the sound controls for a few seconds."""
+        if self.sound_note_id is not None:
+            self.after_cancel(self.sound_note_id)
+        self.sound_note.configure(text=text, fg=MUTED)
+        self.sound_note_id = self.after(int(seconds * 1000),
+                                        lambda: self.sound_note.configure(text="", fg=DIM))
+
+    def _sound_menu(self):
+        if not self.sounds:
+            self._note("No sounds yet: waiting for the brick")
+            return
+        menu = tk.Menu(self, tearoff=0, bg=CARD, fg=FG, activebackground=ACCENT, activeforeground=BG)
+        for group, paths in ev3_sound.grouped(self.sounds):
+            sub = tk.Menu(menu, tearoff=0, bg=CARD, fg=FG, activebackground=ACCENT, activeforeground=BG)
+            for path in paths:
+                sub.add_command(label=ev3_sound.name(path), command=lambda p=path: self._pick_sound(p))
+            menu.add_cascade(label=group, menu=sub)
+        w = self.sound_pick
+        menu.tk_popup(w.winfo_rootx(), w.winfo_rooty() + w.winfo_height())
+
+    def _pick_sound(self, path, play=True):
+        self.sound = path
+        self.sound_pick.configure(text=f"{ev3_sound.group(path)} · {ev3_sound.name(path)}  ▾")
+        if play:
+            self._play_sound()
+
+    def _play_sound(self):
+        if self.sound is None:
+            self._sound_menu()
+            return
+        self.brick.send(ev3_sound.play(self.sound))
+        self._note(f"Playing {ev3_sound.name(self.sound)}")
+
+    def _stop_sound(self):
+        self.brick.send(ev3_sound.STOP)
+
+    def _say(self):
+        text = self.say_text.get().strip()
+        self.focus_set()   # hand the keyboard back to driving
+        if not text:
+            self._note("Type something for the robot to say first")
+            return
+        if self.home:   # keep it, so it joins "my sounds" and ▶ Play / P replays it
+            cmd, path = ev3_sound.say_and_keep(text, self.home)
+            self.brick.send(cmd)
+            if path not in self.sounds:
+                self.sounds.append(path)
+            self._pick_sound(path, play=False)
+            self._note(f"Saying “{text}” · saved to my sounds")
+        else:
+            self.brick.send(ev3_sound.say(text))
+            self._note(f"Saying “{text}”")
+
+    def _change_volume(self, delta):
+        if self.volume is None:
+            return
+        self.volume = max(0, min(100, self.volume + delta))
+        self.vol_label.configure(text=f"{self.volume}%")
+        self.brick.send(ev3_sound.set_volume(self.volume))
+
+    def _upload_sound(self):
+        path = filedialog.askopenfilename(parent=self, title="Upload a sound to the EV3",
+                                          filetypes=[("WAV sound", "*.wav"), ("All files", "*.*")])
+        self.focus_set()
+        if not path:
+            return
+        if not self.brick.connected:
+            self._note("Not connected to the brick yet")
+            return
+        self._note(f"Uploading {os.path.basename(path)}…", 120)
+        client = self.brick.client
+        threading.Thread(target=lambda: setattr(self, "upload_result", ev3_sound.upload(client, path)),
+                         daemon=True).start()
+
+    def _sound_updates(self):
+        """Apply what the background threads fetched (runs on the UI thread)."""
+        if self.sound_info is not None:
+            volume, sounds, self.home = self.sound_info
+            self.sound_info = None
+            self.sounds = sounds + [s for s in self.sounds if s not in sounds]   # keep fresh uploads
+            if volume is not None:
+                self.volume = volume
+                self.vol_label.configure(text=f"{volume}%")
+        if self.upload_result is not None:
+            path, message = self.upload_result
+            self.upload_result = None
+            if path:
+                if path not in self.sounds:
+                    self.sounds.append(path)
+                self._pick_sound(path, play=False)   # ready for ▶ Play
+            self._note(message, 6)
 
     def _close(self):
         self.stop_event.set()

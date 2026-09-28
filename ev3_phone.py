@@ -240,6 +240,9 @@ class Handler(BaseHTTPRequestHandler):
                         controller._send()
         elif self.path == "/reset":
             controller.reset_trip()
+        elif self.path == "/horn":
+            with controller.lock:   # one writer at a time on the brick's command shell
+                controller.brick.horn()
         else:
             return self.send_error(404)
         self._json(controller.state())
@@ -270,8 +273,12 @@ def lan_addresses():
 
 def main():
     global controller
+    try:
+        server = Server(("0.0.0.0", PORT), Handler)
+    except OSError as e:
+        sys.exit(f"Can't use port {PORT} ({e}).\n"
+                 f"Is ev3_phone.py already running? Close it, or change PORT at the top of ev3_phone.py.")
     controller = Controller()
-    server = Server(("0.0.0.0", PORT), Handler)
     print("EV3 RC phone controller")
     print(f"  brick: {rc.HOST}")
     for ip in lan_addresses():
