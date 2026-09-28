@@ -12,9 +12,13 @@ computer or phone, over the same SSH connection the VS Code EV3 extension uses.
 ## Setup
 
 1. Install Python 3 (python.org).
-   - macOS with Homebrew Python: also run `brew install python-tk`.
+   - macOS: use the python.org installer (it includes a current Tk). Apple's built-in
+     `/usr/bin/python3` has an old Tk that can show blank windows. With Homebrew Python, also
+     run `brew install python-tk`.
 2. `pip install -r requirements.txt`
 3. Turn on the brick and connect it (USB, Bluetooth or Wi-Fi) as you would for VS Code.
+   On a Mac, Wi-Fi (a USB Wi-Fi dongle on the brick) or USB is easiest; recent macOS versions
+   no longer support Bluetooth networking.
 
 ## Run
 
@@ -24,8 +28,20 @@ computer or phone, over the same SSH connection the VS Code EV3 extension uses.
 | Phone | `python ev3_phone.py` | `python3 ev3_phone.py` |
 | Status | `python ev3_widget.pyw` (or double-click) | `python3 ev3_widget.pyw` |
 
-The apps look for the brick at `ev3dev.local`. If that doesn't connect, pass its IP address, e.g.
-`python ev3_drive.pyw 192.168.0.1`. For the phone, open the `http://…:8080` address it prints
+The brick's address and login live in `ev3_config.json`, created next to the apps on first run:
+
+```json
+{
+  "host": "ev3dev.local",
+  "user": "robot",
+  "password": "maker"
+}
+```
+
+If you rename the brick (`sudo hostnamectl set-hostname mycar` on the brick, also replace `ev3dev`
+in its `/etc/hosts`, then reboot), set `"host": "mycar.local"`. If `.local` names don't connect,
+use the brick's IP address. For a one-off, an address on the command line wins:
+`python ev3_drive.pyw 192.168.0.1`. The file is not committed to git, so each computer has its own. For the phone, open the `http://…:8080` address it prints
 (the phone must be on the same Wi-Fi; allow Python through the firewall if asked).
 
 ## Driving

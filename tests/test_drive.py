@@ -11,6 +11,7 @@ from unittest import mock
 
 sys.modules.setdefault("paramiko", types.ModuleType("paramiko"))   # not needed offline
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)   # for ev3_config
 rc = SourceFileLoader("ev3_drive", os.path.join(ROOT, "ev3_drive.pyw")).load_module()
 
 TICK = rc.RENEW_MS / 1000

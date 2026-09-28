@@ -8,6 +8,7 @@ the VS Code EV3 extension uses.
 Run:   pythonw ev3_widget.pyw            (or double-click the file)
        pythonw ev3_widget.pyw 192.168.0.1   (connect to a specific address)
 Needs: pip install paramiko
+The brick's address and login are in ev3_config.json (see ev3_config.py).
 
 Drag the title bar to move it. Right-click for options.
 Hold ◀ / ▶ next to a motor to run it; release to stop. ⟳ next to a sensor switches its mode.
@@ -26,9 +27,10 @@ from tkinter import messagebox
 
 import paramiko
 
-HOST = sys.argv[1] if len(sys.argv) > 1 else "ev3dev.local"
-USER = "robot"
-PASSWORD = "maker"
+import ev3_config
+
+CONFIG = ev3_config.load()
+HOST, USER, PASSWORD = CONFIG["host"], CONFIG["user"], CONFIG["password"]
 AUTO_REFRESH_SECONDS = 3.0   # AUTO mode: light on the brick
 LIVE_REFRESH_SECONDS = 0.3   # LIVE mode, and while a motor button is held
 INFO_EVERY = 30              # refresh slow-changing info (IP, disk) every N polls
@@ -758,7 +760,12 @@ class Widget(tk.Tk):
                              command=lambda: self.attributes("-topmost", self.topmost.get()))
         menu.add_separator()
         menu.add_command(label="Close", command=self.destroy)
-        self.bind_all("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
+        popup = lambda e: menu.tk_popup(e.x_root, e.y_root)
+        if sys.platform == "darwin":   # macOS Tk: right-click is Button-2, or Control-click
+            self.bind_all("<Button-2>", popup)
+            self.bind_all("<Control-Button-1>", popup)
+        else:
+            self.bind_all("<Button-3>", popup)
 
     # ---------- status dot ----------
     def _set_dot(self, color):
@@ -858,7 +865,7 @@ class Widget(tk.Tk):
         for b in self.buttons.values():
             b.set_enabled(True)
         if result.get("rc", "1") != "0" and name != "stop":
-            msg = "Failed: the brick refused sudo (check PASSWORD at the top of this file)"
+            msg = "Failed: the brick refused sudo (check the password in ev3_config.json)"
         elif name == "stop":
             msg = "Program stopped" if result.get("stopped") else "No program was running"
         else:

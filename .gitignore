@@ -1,8 +1,10 @@
 __pycache__/
 *.pyc
 
-# Per-robot calibration and last gear; each computer makes its own on first run.
+# Per-robot calibration and last gear, and the brick's address/login; each computer
+# makes its own on first run.
 ev3_drive_settings.json
+ev3_config.json
 
 .vscode/
 .DS_Store

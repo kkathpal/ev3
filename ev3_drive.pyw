@@ -7,6 +7,7 @@ link latency and the brick's battery.
 Run:   pythonw ev3_drive.pyw               (or double-click the file)
        pythonw ev3_drive.pyw 192.168.0.1   (connect to a specific address)
 Needs: pip install paramiko
+The brick's address and login are in ev3_config.json (see ev3_config.py).
 
 Calibrate in the SETUP card: pick which motor is each wheel, use Test to check it
 rolls forward (Invert it if not), and move Drift fix if the robot curves when it
@@ -43,9 +44,10 @@ import tkinter as tk
 
 import paramiko
 
-HOST = sys.argv[1] if len(sys.argv) > 1 else "ev3dev.local"
-USER = "robot"
-PASSWORD = "maker"
+import ev3_config
+
+CONFIG = ev3_config.load()
+HOST, USER, PASSWORD = CONFIG["host"], CONFIG["user"], CONFIG["password"]
 DEFAULT_LEFT = "outA"     # used until you pick motors in the window
 DEFAULT_RIGHT = "outD"
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ev3_drive_settings.json")
@@ -62,6 +64,7 @@ HARD_STOP = "hold"       # Space, the STOP button, window/phone losing focus
 TURN_INNER = 0.35        # inner wheel speed while curving, as a fraction of the outer
 PULSE_MS = 400           # each drive command runs this long...
 RENEW_MS = 120           # ...and is renewed this often while a key is held
+KEY_RELEASE_MS = 40      # a key release counts only if no press follows within this (auto-repeat)
 MONITOR_SECONDS = 0.2    # how often motor speed/position is read back
 WHEEL_MM = 56            # wheel diameter for speed/trip (standard EV3 tyre is 56 mm)
 MOTOR_LIMIT = 1050       # ev3dev rejects speed_sp above the motor's max_speed
@@ -616,6 +619,7 @@ class DriveApp(tk.Tk):
 
         self.brick = Brick()
         self.held = set()                 # directions currently held
+        self.pending_release = {}         # direction -> after() id of a delayed key release
         self.moving = False
         self.tick_id = None
         settings = load_settings()
@@ -801,7 +805,10 @@ class DriveApp(tk.Tk):
         if event.keysym == "space":
             self._release_all()
         elif event.keysym in KEYS:
-            self._press(KEYS[event.keysym])
+            direction = KEYS[event.keysym]
+            if direction in self.pending_release:   # auto-repeat, not a real release
+                self.after_cancel(self.pending_release.pop(direction))
+            self._press(direction)
         elif not event.char:   # Shift, Ctrl, ... ("" is "in" every string below)
             return
         elif event.char in "1234"[:len(MODES)]:
@@ -813,11 +820,18 @@ class DriveApp(tk.Tk):
             self.mode.set(names[i])
 
     def _key_up(self, event):
+        # Holding a key on macOS/Linux auto-repeats as release+press pairs, which would
+        # brake and restart the ramp many times a second. Release a moment later instead;
+        # a press that follows at once cancels it.
         if event.keysym in KEYS:
-            self._release(KEYS[event.keysym])
+            direction = KEYS[event.keysym]
+            if direction in self.pending_release:
+                self.after_cancel(self.pending_release[direction])
+            self.pending_release[direction] = self.after(
+                KEY_RELEASE_MS, lambda: (self.pending_release.pop(direction, None), self._release(direction)))
 
     def _press(self, direction):
-        if direction not in self.held:   # ignore Windows key auto-repeat
+        if direction not in self.held:   # ignore key auto-repeat
             self.held.add(direction)
             self._tick()
 
@@ -827,6 +841,9 @@ class DriveApp(tk.Tk):
             self._tick()
 
     def _release_all(self):
+        for after_id in self.pending_release.values():
+            self.after_cancel(after_id)
+        self.pending_release.clear()
         self.held.clear()
         self._tick()
         self.brick.stop()   # always, even if we think we're already stopped

@@ -12,6 +12,7 @@ are hand-drawn `tkinter`. No build step.
 | `ev3_drive.pyw` | **EV3 RC**: drive a two-motor robot from the keyboard like an RC car, with a live dashboard (speedometer, wheel meters, trip, battery, latency) and a calibration card. Holds all the shared drive logic. |
 | `ev3_phone.py` + `ev3_phone.html` | Phone controller: a small HTTP server on the PC (port 8080) serving a touch page. **Imports `ev3_drive.pyw`** (`SourceFileLoader`) and reuses its `Brick`, `wheel_commands`, `send_drive`, constants and settings. |
 | `ev3_widget.pyw` | **EV3 Status** widget: always-on-top window showing battery, CPU/RAM, ports, motors, sensors; jog motors, switch sensor modes, free memory (sudo), stop the running program. Independent of the other files. |
+| `ev3_config.py` | Loads `ev3_config.json` (brick address + SSH login) for all three apps. |
 | `tests/test_drive.py` | Offline tests for the drive logic (fake brick, fake clock). |
 | `ev3_drive_settings.json` | Created at runtime, git-ignored. Motor ports, per-wheel invert, drift trim, last gear. Written by the desktop app, read (and `mode` written) by the phone server. |
 
@@ -21,13 +22,16 @@ are hand-drawn `tkinter`. No build step.
 
 ```
 pip install -r requirements.txt
-python ev3_drive.pyw [brick-address]     # default address ev3dev.local
+python ev3_drive.pyw [brick-address]     # address overrides ev3_config.json
 python ev3_phone.py  [brick-address]     # then open the printed http://<PC>:8080 on a phone
 python ev3_widget.pyw [brick-address]
 python -m unittest discover -s tests -v  # offline, no robot needed
 ```
 
-SSH login is ev3dev's default `robot` / `maker` (constants `USER`, `PASSWORD` in each app).
+The brick's address and SSH login come from `ev3_config.json` (git-ignored, created with ev3dev's
+defaults `ev3dev.local` / `robot` / `maker` on first run) via `ev3_config.load()`, which each app
+turns into its `HOST`, `USER`, `PASSWORD` constants. A command-line address overrides the file.
+Never hard-code an address or password in the apps.
 
 ## How driving works (`ev3_drive.pyw`)
 
@@ -79,7 +83,11 @@ Gears live in `MODES` (name, % of `MAX_SPEED`). ev3dev rejects `speed_sp` above 
   `ACCENT`, …); fonts are the `FONT_*` constants (Windows fonts; other OSes fall back).
 - Tunables are the UPPER_CASE constants at the top of each file, each with a short comment.
 - Windows-only calls (`ctypes.windll`, DWM title bar, DPI awareness) stay inside `try/except` so
-  macOS and Linux still run. On macOS the apps set `tk scaling` so sizes match Windows.
+  macOS and Linux still run. On macOS the apps set `tk scaling` so sizes match Windows, and the
+  widget's menu is on Button-2 / Control-click instead of Button-3.
+- Key releases in `ev3_drive.pyw` are delayed by `KEY_RELEASE_MS` and cancelled by an immediate
+  press: macOS/Linux Tk auto-repeat sends release+press pairs, which would otherwise brake and
+  restart the ramp many times a second. Windows only repeats presses.
 - Match the existing style: short docstrings saying why, not what; no new dependencies.
 
 ## Checking a change

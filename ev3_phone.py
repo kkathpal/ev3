@@ -4,7 +4,7 @@ This PC keeps the connection to the brick (like ev3_drive.pyw) and serves a touc
 controller page to phones on the same Wi-Fi. It drives exactly like the desktop
 app: same gears, Turbo, and calibration (read from ev3_drive_settings.json).
 
-Run:   python ev3_phone.py               (brick at ev3dev.local)
+Run:   python ev3_phone.py               (brick address from ev3_config.json)
        python ev3_phone.py 192.168.0.1   (brick at a specific address)
 Then open the printed http://<this PC>:8080 address on your phone.
 
@@ -257,7 +257,11 @@ def lan_addresses():
             found.append(s.getsockname()[0])
     except OSError:
         pass
-    for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+    try:   # can fail on macOS when the computer's own name doesn't resolve
+        infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+    except OSError:
+        infos = []
+    for info in infos:
         ip = info[4][0]
         if ip not in found and not ip.startswith("127.") and ip != "192.168.0.2":   # skip the brick link
             found.append(ip)
@@ -272,7 +276,7 @@ def main():
     print(f"  brick: {rc.HOST}")
     for ip in lan_addresses():
         print(f"  open on your phone:  http://{ip}:{PORT}")
-    print("  (phone must be on the same Wi-Fi; allow Python through the Windows firewall if asked)")
+    print("  (phone must be on the same Wi-Fi; allow Python through the firewall if asked)")
     print("  Ctrl+C to quit")
     try:
         server.serve_forever()
