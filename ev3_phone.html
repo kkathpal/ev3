@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0f1115">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="EV3 RC">
+<title>EV3 RC</title>
+<style>
+  :root {
+    --bg: #0f1115; --card: #181b22; --tile: #1f232c; --line: #2a2f3a;
+    --fg: #eef0f4; --muted: #7d8595; --dim: #4a5060;
+    --accent: #5aa9ff; --violet: #a07bff; --good: #3ddc97; --warn: #ffb547; --bad: #ff6363;
+    --turbo: #ff4fd8; --track: #272b35;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 14px/1.3 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-variant-numeric: tabular-nums; -webkit-user-select: none; user-select: none;
+    touch-action: manipulation; overscroll-behavior: none; }
+  body { padding: env(safe-area-inset-top) 12px env(safe-area-inset-bottom); display: flex;
+    flex-direction: column; min-height: 100%; }
+  .strip { height: 3px; margin: 0 -12px; background: linear-gradient(90deg, var(--accent), var(--violet)); }
+
+  header { display: flex; align-items: center; gap: 8px; padding: 10px 2px; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 650; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); }
+  .host { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    flex: 1; min-width: 0; }
+  .links { flex: none; display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
+  .bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; }
+  .bars i { width: 3px; background: var(--track); border-radius: 1px; }
+  .bars i:nth-child(1) { height: 4px } .bars i:nth-child(2) { height: 6px }
+  .bars i:nth-child(3) { height: 9px } .bars i:nth-child(4) { height: 12px }
+  .batt { display: inline-flex; align-items: center; gap: 4px; }
+  .batt b { position: relative; width: 22px; height: 11px; border: 1.5px solid var(--muted); border-radius: 3px; }
+  .batt b::after { content: ""; position: absolute; right: -4px; top: 2px; width: 2px; height: 4px; background: var(--muted); border-radius: 1px; }
+  .batt b i { position: absolute; left: 1px; top: 1px; bottom: 1px; width: 0; background: var(--good); border-radius: 1px; }
+
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; flex: 1; }
+  .layout > section { min-width: 0; }
+  @media (orientation: landscape) and (min-width: 600px) {
+    .layout { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+  }
+  .card { background: var(--card); border-radius: 14px; padding: 12px; }
+  .caps { font-size: 10px; font-weight: 650; letter-spacing: .06em; color: var(--dim); text-transform: uppercase; }
+
+  .dash { display: grid; grid-template-columns: 22px minmax(0, 1fr) 22px; gap: 10px; align-items: end; }
+  .meter { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .meter .bar { position: relative; width: 12px; height: min(130px, 15vh); background: var(--tile); border-radius: 6px; overflow: hidden; }
+  .meter .bar::after { content: ""; position: absolute; left: -2px; right: -2px; top: 50%; height: 1px; background: var(--muted); }
+  .meter .fill { position: absolute; left: 0; right: 0; background: var(--good); transition: all .15s ease-out; }
+  .meter span { font-size: 10px; color: var(--muted); }
+  .meter em { font-style: normal; font-size: 11px; }
+  svg.speedo { width: 100%; max-width: min(280px, 33vh); margin: 0 auto; display: block; }
+  .speed-num { font-size: 44px; font-weight: 700; fill: var(--fg); }
+  .unit { font-size: 11px; fill: var(--muted); }
+  .scale { font-size: 9px; fill: var(--dim); }
+
+  .trip { display: flex; gap: 8px; align-items: center; }
+  .trip div { flex: 1; min-width: 0; }
+  .trip b { display: block; font-size: 18px; font-weight: 650; margin-top: 2px; }
+  button { font: inherit; color: var(--fg); background: var(--tile); border: 0; border-radius: 10px; }
+  .small { padding: 7px 12px; font-size: 12px; }
+
+  .pad { display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr);
+    gap: 10px; width: min(100%, 330px, 38vh); aspect-ratio: 1; margin: 0 auto; touch-action: none; }
+  .key { display: grid; place-items: center; border-radius: 18px; background: var(--tile);
+    border: 1px solid var(--line); touch-action: none; transition: background .06s, transform .06s; }
+  .key svg { width: 38%; fill: var(--fg); }
+  .key.on { background: var(--accent); border-color: #9ccbff; transform: scale(.96); }
+  .key.on svg { fill: var(--bg); }
+  .k-up { grid-area: 1 / 2 } .k-left { grid-area: 2 / 1 } .k-right { grid-area: 2 / 3 } .k-down { grid-area: 3 / 2 }
+  .stop { grid-area: 2 / 2; border-radius: 50%; background: var(--bad); color: var(--bg); font-weight: 900;
+    letter-spacing: .04em; box-shadow: 0 0 0 6px #ff636333; touch-action: none; }
+  .stop:active { transform: scale(.94); }
+
+  .gears { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+  .gear { padding: 10px 4px; border: 1px solid transparent; text-align: center; }
+  .gear b { display: block; font-size: 18px; color: var(--muted); }
+  .gear span { display: block; font-size: 12px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; }
+  .gear small { display: block; font-size: 10px; color: var(--muted); margin-top: 2px; }
+
+  .warn { color: var(--warn); font-size: 12px; margin-top: 8px; min-height: 0; }
+  footer { color: var(--dim); font-size: 11px; text-align: center; padding: 10px 0 12px; }
+
+  .overlay { position: fixed; inset: 0; background: #0f1115e6; display: none; place-items: center;
+    text-align: center; padding: 24px; z-index: 10; }
+  .overlay.show { display: grid; }
+  .overlay h2 { margin: 0 0 6px; font-size: 18px; }
+  .overlay p { margin: 0; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="strip"></div>
+<header>
+  <span class="dot" id="dot"></span>
+  <h1>EV3 RC</h1>
+  <span class="host" id="host">connecting…</span>
+  <div class="links">
+    <span title="phone → PC → brick"><span class="bars" id="bars"><i></i><i></i><i></i><i></i></span> <span id="ms">–</span></span>
+    <span class="batt"><b><i id="battfill"></i></b><span id="batt">–</span></span>
+  </div>
+</header>
+
+<div class="layout">
+  <section>
+    <div class="card dash">
+      <div class="meter"><div class="bar"><div class="fill" id="barL"></div></div><span>LEFT</span><em id="valL">0</em></div>
+      <svg class="speedo" id="speedo" viewBox="0 0 200 172" aria-label="speed">
+        <g id="segs"></g><g id="scale"></g>
+        <text x="100" y="104" text-anchor="middle" class="speed-num" id="speed">0</text>
+        <text x="100" y="122" text-anchor="middle" class="unit">cm/s</text>
+        <circle cx="100" cy="148" r="16" fill="#1f232c" stroke="#2a2f3a" id="gearRing"/>
+        <text x="100" y="155" text-anchor="middle" font-size="18" font-weight="700" fill="#7d8595" id="gear">N</text>
+      </svg>
+      <div class="meter"><div class="bar"><div class="fill" id="barR"></div></div><span>RIGHT</span><em id="valR">0</em></div>
+    </div>
+    <div class="card trip" style="margin-top:10px">
+      <div><span class="caps">Trip</span><b id="trip">0 cm</b></div>
+      <div><span class="caps">Top speed</span><b id="top">0 cm/s</b></div>
+      <button class="small" id="reset">Reset</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="pad" id="pad">
+      <div class="key k-up" data-dir="up"><svg viewBox="0 0 24 24"><path d="M12 4 21 18H3z"/></svg></div>
+      <div class="key k-left" data-dir="left"><svg viewBox="0 0 24 24"><path d="M4 12 18 3v18z"/></svg></div>
+      <button class="stop" id="stop">STOP</button>
+      <div class="key k-right" data-dir="right"><svg viewBox="0 0 24 24"><path d="M20 12 6 21V3z"/></svg></div>
+      <div class="key k-down" data-dir="down"><svg viewBox="0 0 24 24"><path d="M12 20 3 6h18z"/></svg></div>
+    </div>
+    <div class="gears" id="gears"></div>
+    <div class="warn" id="warn"></div>
+  </section>
+</div>
+
+<footer id="foot">Hold arrows to drive · two fingers to curve</footer>
+
+<div class="overlay" id="overlay"><div><h2 id="ovTitle">Connecting…</h2><p id="ovText">Looking for the controller on your PC.</p></div></div>
+
+<script>
+const GEAR_COLORS = { Slow: "#3ddc97", Normal: "#5aa9ff", Fast: "#ffb547", Turbo: "#ff4fd8" };
+const $ = id => document.getElementById(id);
+const held = new Set();            // directions currently pressed
+const pointers = new Map();        // pointerId -> direction
+let mode = "Normal", maxCm = 56, segs = [], built = false;
+let inFlight = false, lastState = 0, phoneMs = null, failures = 0;
+
+// ---------- speedometer (segmented arc like the desktop app) ----------
+function mix(a, b, t) {
+  const p = s => [1, 3, 5].map(i => parseInt(s.slice(i, i + 2), 16));
+  const [x, y] = [p(a), p(b)];
+  return "#" + x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, "0")).join("");
+}
+function polar(a, r) { const t = a * Math.PI / 180; return [100 + r * Math.cos(t), 100 - r * Math.sin(t)]; }
+function buildSpeedo() {
+  const n = 36, start = 210, sweep = 240, seg = sweep / n, r = 82;
+  const g = $("segs"); g.innerHTML = ""; segs = [];
+  for (let i = 0; i < n; i++) {
+    const a0 = start - i * seg, a1 = a0 - (seg - 1.8);
+    const [x0, y0] = polar(a0, r), [x1, y1] = polar(a1, r);
+    const color = i < n * .6 ? mix("#3ddc97", "#ffb547", i / (n * .6)) : mix("#ffb547", "#ff6363", (i - n * .6) / (n * .4));
+    const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    p.setAttribute("d", `M${x0} ${y0} A${r} ${r} 0 0 1 ${x1} ${y1}`);
+    p.setAttribute("stroke", "#272b35"); p.setAttribute("stroke-width", "12"); p.setAttribute("fill", "none");
+    g.appendChild(p); segs.push([p, color]);
+  }
+  const sc = $("scale"); sc.innerHTML = "";
+  for (let v = 0; v <= maxCm; v += 10) {
+    const [x, y] = polar(start - sweep * v / maxCm, r - 22);
+    const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    t.setAttribute("x", x); t.setAttribute("y", y + 3); t.setAttribute("text-anchor", "middle");
+    t.setAttribute("class", "scale"); t.textContent = v; sc.appendChild(t);
+  }
+}
+let shown = 0, target = 0;
+function animate() {
+  shown += (target - shown) * .3;
+  if (Math.abs(target - shown) < .05) shown = target;
+  const lit = Math.round(segs.length * Math.min(1, shown / maxCm));
+  segs.forEach(([p, c], i) => p.setAttribute("stroke", i < lit ? c : "#272b35"));
+  $("speed").textContent = Math.round(shown);
+  requestAnimationFrame(animate);
+}
+
+// ---------- gears ----------
+function buildGears(modes) {
+  const box = $("gears"); box.innerHTML = "";
+  modes.forEach((m, i) => {
+    const b = document.createElement("button");
+    b.className = "gear"; b.dataset.mode = m.name;
+    b.innerHTML = `<b>${i + 1}</b><span>${m.name.toUpperCase()}</span><small>${m.name === "Turbo" ? "full power" : m.cm + " cm/s"}</small>`;
+    b.addEventListener("click", () => setMode(m.name));
+    box.appendChild(b);
+  });
+  paintGears();
+}
+function paintGears() {
+  document.querySelectorAll(".gear").forEach(b => {
+    const on = b.dataset.mode === mode, c = GEAR_COLORS[b.dataset.mode];
+    b.style.background = on ? mix(c, "#181b22", .78) : "";
+    b.style.borderColor = on ? c : "transparent";
+    b.querySelector("b").style.color = on ? c : "";
+  });
+}
+function setMode(m) {
+  mode = m; paintGears();
+  post("/mode", { mode: m });
+}
+
+// ---------- input: multi-touch hold-to-drive ----------
+function paintKeys() { document.querySelectorAll(".key").forEach(k => k.classList.toggle("on", held.has(k.dataset.dir))); }
+function recompute() {
+  const before = [...held].sort().join();
+  held.clear(); pointers.forEach(d => held.add(d)); keys.forEach(d => held.add(d));
+  paintKeys();
+  if ([...held].sort().join() !== before) send(true);   // react instantly, don't wait for the tick
+}
+document.querySelectorAll(".key").forEach(k => {
+  k.addEventListener("pointerdown", e => { e.preventDefault(); k.setPointerCapture(e.pointerId); pointers.set(e.pointerId, k.dataset.dir); recompute(); });
+  const up = e => { pointers.delete(e.pointerId); recompute(); };
+  ["pointerup", "pointercancel", "lostpointercapture"].forEach(t => k.addEventListener(t, up));
+});
+function releaseAll() { pointers.clear(); keys.clear(); recompute(); post("/stop", {}); }
+$("stop").addEventListener("pointerdown", e => { e.preventDefault(); releaseAll(); });
+$("reset").addEventListener("click", () => post("/reset", {}));
+document.addEventListener("contextmenu", e => e.preventDefault());
+document.addEventListener("visibilitychange", () => { if (document.hidden) releaseAll(); });
+window.addEventListener("blur", releaseAll);
+
+// keyboard too (handy when testing in a desktop browser)
+const keys = new Set();
+const KEYMAP = { ArrowUp: "up", w: "up", ArrowDown: "down", s: "down", ArrowLeft: "left", a: "left", ArrowRight: "right", d: "right" };
+addEventListener("keydown", e => {
+  if (KEYMAP[e.key]) { e.preventDefault(); keys.add(KEYMAP[e.key]); recompute(); }
+  else if (e.key === " ") releaseAll();
+  else if ("1234".includes(e.key) && e.key && window._modes) setMode(window._modes[+e.key - 1].name);
+});
+addEventListener("keyup", e => { if (KEYMAP[e.key]) { keys.delete(KEYMAP[e.key]); recompute(); } });
+
+// ---------- talking to the PC ----------
+async function post(path, body) {
+  const t0 = performance.now();
+  try {
+    const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    phoneMs = performance.now() - t0; failures = 0;
+    show(await r.json());
+  } catch (e) { fail(); }
+}
+async function send(force) {
+  if (inFlight && !force) return;
+  inFlight = true;
+  await post("/drive", { held: [...held], mode });
+  inFlight = false;
+}
+async function poll() {
+  const t0 = performance.now();
+  try {
+    const r = await fetch("/state", { cache: "no-store" });
+    phoneMs = performance.now() - t0; failures = 0;
+    show(await r.json());
+  } catch (e) { fail(); }
+}
+setInterval(() => {
+  if (held.size) send(false);                       // heartbeat: keeps the robot moving while held
+  else if (performance.now() - lastState > 300) { lastState = performance.now(); poll(); }
+}, 100);
+
+function fail() {
+  if (++failures >= 3) {
+    $("overlay").classList.add("show");
+    $("ovTitle").textContent = "Can't reach the PC";
+    $("ovText").textContent = "Is ev3_phone.py still running, and is this phone on the same Wi-Fi?";
+    $("dot").style.background = "var(--bad)";
+  }
+}
+
+function show(s) {
+  if (!built && s.modes) { maxCm = s.max_cm || maxCm; buildSpeedo(); buildGears(s.modes); window._modes = s.modes; built = true; }
+  if (s.mode && s.mode !== mode && !held.size) { mode = s.mode; paintGears(); }
+  const ok = s.connected;
+  $("overlay").classList.toggle("show", !ok);
+  if (!ok) { $("ovTitle").textContent = "Waiting for the robot"; $("ovText").textContent = s.status || "Connecting to the brick…"; }
+  $("dot").style.background = ok ? "var(--good)" : "var(--warn)";
+  $("host").textContent = s.motors || "";
+
+  const total = (phoneMs || 0) + (s.brick_ms || 0);
+  $("ms").textContent = s.brick_ms != null ? Math.round(total) + " ms" : "–";
+  const n = s.brick_ms == null ? 0 : total < 80 ? 4 : total < 150 ? 3 : total < 300 ? 2 : 1;
+  const bc = n >= 3 ? "var(--good)" : n === 2 ? "var(--warn)" : "var(--bad)";
+  document.querySelectorAll("#bars i").forEach((b, i) => b.style.background = i < n ? bc : "var(--track)");
+
+  if (s.battery != null) {
+    const p = s.battery, c = p > .5 ? "var(--good)" : p > .2 ? "var(--warn)" : "var(--bad)";
+    $("battfill").style.width = (p * 18) + "px"; $("battfill").style.background = c;
+    $("batt").textContent = Math.round(p * 100) + "%";
+  }
+  target = s.speed || 0;
+  const gc = { D: "#3ddc97", R: "#ffb547", N: "#7d8595" }[s.gear] || "#a07bff";
+  $("gear").textContent = s.gear || "N"; $("gear").setAttribute("fill", gc);
+  $("gearRing").setAttribute("stroke", mix(gc, "#181b22", .5));
+  meter("L", s.left || 0, s.max_deg || 1000); meter("R", s.right || 0, s.max_deg || 1000);
+  $("trip").textContent = s.trip_cm >= 100 ? (s.trip_cm / 100).toFixed(2) + " m" : Math.round(s.trip_cm || 0) + " cm";
+  $("top").textContent = Math.round(s.top_speed || 0) + " cm/s";
+  $("warn").textContent = s.warning || "";
+}
+function meter(side, v, max) {
+  const f = Math.max(-1, Math.min(1, v / max)), el = $("bar" + side);
+  el.style.top = f >= 0 ? (50 - f * 50) + "%" : "50%";
+  el.style.bottom = f >= 0 ? "50%" : (50 + f * 50) + "%";
+  el.style.background = f >= 0 ? "var(--good)" : "var(--warn)";
+  $("val" + side).textContent = v > 0 ? "+" + v : v;
+}
+
+buildSpeedo(); animate(); poll();
+</script>
+</body>
+</html>

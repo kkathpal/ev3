@@ -1,0 +1,90 @@
+# EV3 Dashboard — notes for coding agents
+
+PC-side tools for a LEGO Mindstorms EV3 brick running **ev3dev** (Debian Linux on the brick).
+Everything talks to the brick over **SSH** (`paramiko`) by reading and writing ev3dev's sysfs
+files. Nothing is installed on the brick. Python 3 standard library + `paramiko` only; the UIs
+are hand-drawn `tkinter`. No build step.
+
+## Files
+
+| File | What it is |
+|---|---|
+| `ev3_drive.pyw` | **EV3 RC**: drive a two-motor robot from the keyboard like an RC car, with a live dashboard (speedometer, wheel meters, trip, battery, latency) and a calibration card. Holds all the shared drive logic. |
+| `ev3_phone.py` + `ev3_phone.html` | Phone controller: a small HTTP server on the PC (port 8080) serving a touch page. **Imports `ev3_drive.pyw`** (`SourceFileLoader`) and reuses its `Brick`, `wheel_commands`, `send_drive`, constants and settings. |
+| `ev3_widget.pyw` | **EV3 Status** widget: always-on-top window showing battery, CPU/RAM, ports, motors, sensors; jog motors, switch sensor modes, free memory (sudo), stop the running program. Independent of the other files. |
+| `tests/test_drive.py` | Offline tests for the drive logic (fake brick, fake clock). |
+| `ev3_drive_settings.json` | Created at runtime, git-ignored. Motor ports, per-wheel invert, drift trim, last gear. Written by the desktop app, read (and `mode` written) by the phone server. |
+
+`.pyw` = Python run without a console on Windows. Run with `python` (not `pythonw`) to see tracebacks.
+
+## Running
+
+```
+pip install -r requirements.txt
+python ev3_drive.pyw [brick-address]     # default address ev3dev.local
+python ev3_phone.py  [brick-address]     # then open the printed http://<PC>:8080 on a phone
+python ev3_widget.pyw [brick-address]
+python -m unittest discover -s tests -v  # offline, no robot needed
+```
+
+SSH login is ev3dev's default `robot` / `maker` (constants `USER`, `PASSWORD` in each app).
+
+## How driving works (`ev3_drive.pyw`)
+
+Pipeline, called every `RENEW_MS` (120 ms) while a key is held, and immediately on any key change:
+
+1. `wheel_commands(held, mode, trim)` → target wheel speeds in deg/s, **wheel space** (+ = forward,
+   before Invert). Curves slow the inner wheel to `TURN_INNER`; left/right alone spins in place.
+2. `send_drive(brick, lp, rp, left, right, mode, invert_left, invert_right)`:
+   - `Brick.ramp()` moves from the last levels toward the targets. **Overall speed** (average of the
+     wheels) changes over `RAMP_SECONDS`; **steering** (half their difference) over `STEER_SECONDS`,
+     scaled with speed so a curve keeps its shape from a standstill. Rates are per second (from
+     `time.monotonic()`), not per command, because the phone renews faster than the desktop.
+     This protects the robot's gears; don't remove it.
+   - Invert is applied after ramping (motor space = wheel space × ±1).
+   - Normal gears: `Brick.drive()` → `speed_sp` + `time_sp=PULSE_MS` + `run-timed` (speed-regulated,
+     expires on its own). Turbo: `Brick.drive_direct()` → `duty_cycle_sp` + `run-direct` (raw power,
+     no timeout) plus a heartbeat write to `$HB`.
+3. Key release → `Brick.stop(released=True)` uses `RELEASE_STOP`; Space / STOP button / focus loss /
+   phone timeout → `Brick.stop()` uses `HARD_STOP`. Stop actions: `coast` < `brake` < `hold`.
+   `stop()` stops every motor, not just the selected pair.
+
+`Brick` keeps two long-lived shells over one SSH connection: `ctl` (drive commands, one line of
+`echo … > /sys/class/tacho-motor/motorN/…` per call, never waits for output) and `mon` (readback via
+a `mon` shell function, every `MONITOR_SECONDS`). `watchdog_script()` starts a background loop on the
+brick that stops all motors if the Turbo heartbeat goes stale for `WATCHDOG_CS` or the SSH session dies.
+
+Gears live in `MODES` (name, % of `MAX_SPEED`). ev3dev rejects `speed_sp` above the motor's
+`max_speed`, hence `MOTOR_LIMIT` (1050) as the clamp and the full-power scale.
+
+## Rules that must hold
+
+- **Every way of moving a motor must stop by itself** if the PC app dies, the window loses focus,
+  or Wi-Fi/SSH drops: timed pulses, or the brick-side watchdog for `run-direct`. Never add a
+  `run-forever` / `run-direct` path without that cover.
+- **Do not move the real robot on your own.** It may be on a desk. Read-only SSH checks (listing
+  motors, battery) are fine; ask the user before sending anything that turns a motor, and let them
+  do the driving tests.
+- `ev3_phone.py` depends on `ev3_drive.pyw`'s names and signatures (`Brick`, `wheel_commands`,
+  `send_drive`, `load_settings`/`save_settings`, `MODES`, `SETTINGS_FILE`, `DEFAULT_LEFT/RIGHT`,
+  `BATTERY_RANGE`, `AA_RANGE`, `MAX_SPEED`, `MOTOR_LIMIT`, `MONITOR_SECONDS`, `deg_to_cm`, `HOST`).
+  Change both files together, and keep the phone driving exactly like the desktop.
+- Keep the settings JSON keys backward compatible (`reverse` is an older single-invert key still read).
+- The brick's CPU is slow. Anything that polls it uses shell builtins only (`read`, `echo`, `case`),
+  runs `renice -n 19`, and avoids starting processes per poll.
+
+## Conventions
+
+- Sizes go through `px()` (scaled from screen DPI); colours are the module constants (`BG`, `CARD`,
+  `ACCENT`, …); fonts are the `FONT_*` constants (Windows fonts; other OSes fall back).
+- Tunables are the UPPER_CASE constants at the top of each file, each with a short comment.
+- Windows-only calls (`ctypes.windll`, DWM title bar, DPI awareness) stay inside `try/except` so
+  macOS and Linux still run. On macOS the apps set `tk scaling` so sizes match Windows.
+- Match the existing style: short docstrings saying why, not what; no new dependencies.
+
+## Checking a change
+
+1. `python -m unittest discover -s tests -v`. Add a test there for any drive-logic change.
+2. For UI changes, launch the app (`python ev3_drive.pyw`); it runs without a robot and shows
+   "Connecting…".
+3. Hand the real-robot check to the user with concrete steps (what to press, what should happen).

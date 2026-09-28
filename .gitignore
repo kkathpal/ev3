@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+
+# Per-robot calibration and last gear; each computer makes its own on first run.
+ev3_drive_settings.json
+
+.vscode/
+.DS_Store
