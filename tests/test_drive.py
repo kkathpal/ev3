@@ -106,5 +106,52 @@ class DriveTest(unittest.TestCase):
         self.assertLess(left, rc.MAX_SPEED * 0.1)   # starts gently again after a stop
 
 
+class CalibrateTest(unittest.TestCase):
+    """Calibrate by driving, against every way two motors can be fitted."""
+
+    WIRINGS = [(left_pick_is_left, s0, s1) for left_pick_is_left in (True, False)
+               for s0 in (1, -1) for s1 in (1, -1)]
+
+    @staticmethod
+    def robot(wiring, left_pick, right_pick):
+        """Motor commands for the (left pick, right pick) motors → what the robot's actual
+        (left wheel, right wheel) do. s0/s1: which way each motor is mounted."""
+        left_pick_is_left, s0, s1 = wiring
+        m0, m1 = left_pick * s0, right_pick * s1
+        return (m0, m1) if left_pick_is_left else (m1, m0)
+
+    def watch(self, wiring):
+        """What a person clicks for each arrow after watching the robot."""
+        motion = {pattern: arrow for arrow, pattern in rc.CAL_PATTERNS.items()}
+        return {arrow: motion[self.robot(wiring, *pattern)] for arrow, pattern in rc.CAL_PATTERNS.items()}
+
+    def test_every_wiring_drives_right_after_calibrating(self):
+        sign = lambda v: (v > 0) - (v < 0)
+        for wiring in self.WIRINGS:
+            with self.subTest(wiring=wiring):
+                (swap, inv_l, inv_r), reason = rc.cal_result(self.watch(wiring))
+                self.assertIsNone(reason)
+                if swap:   # the left pick is now the motor that was the right pick
+                    wiring = (not wiring[0], wiring[2], wiring[1])
+                for held in ({"up"}, {"down"}, {"left"}, {"right"}, {"up", "left"}, {"down", "right"}):
+                    left, right = rc.wheel_commands(held, "Normal")
+                    commands = (-left if inv_l else left, -right if inv_r else right)
+                    actual = self.robot(wiring, *commands)
+                    self.assertEqual((sign(actual[0]), sign(actual[1])), (sign(left), sign(right)), held)
+
+    def test_prefilled_answers_match_the_current_settings(self):
+        for inv_l in (False, True):
+            for inv_r in (False, True):
+                (swap, got_l, got_r), _ = rc.cal_result(rc.cal_predict(inv_l, inv_r))
+                self.assertEqual((swap, got_l, got_r), (False, inv_l, inv_r))
+
+    def test_answers_that_cannot_happen_are_refused(self):
+        result, reason = rc.cal_result({"up": "up", "down": "left", "left": "down", "right": "right"})
+        self.assertIsNone(result)
+        self.assertIn("opposite", reason)
+        result, reason = rc.cal_result({"up": "up", "down": None, "left": "left", "right": "right"})
+        self.assertIsNone(result)
+
+
 if __name__ == "__main__":
     unittest.main()

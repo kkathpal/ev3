@@ -60,9 +60,12 @@ use the brick's IP address. For a one-off, an address on the command line wins:
 | P | play the sound picked in the Sound card |
 | Space | stop hard |
 
-First time with a robot: in the **Setup** card pick which motor is each wheel, press **Test** to
-check it rolls forward (tick **Invert** if not), and use **Drift fix** if it curves when it should
-go straight. Settings are saved in `ev3_drive_settings.json` next to the app (one per computer).
+First time with a robot: in the **Setup** card press **Calibrate…**. Hold each arrow key (or its
+**Test** button); the robot moves slowly while you hold it. Click what it actually did (Forward,
+Backward, Left or Right) and **Save**: it works out **Swap** and **Invert** for you. You can also
+do it by hand: pick which motor is each wheel, press **Test** to check it rolls forward (tick
+**Invert** if not). Use **Drift fix** if it curves when it should go straight. Settings are saved
+in `ev3_drive_settings.json` next to the app (one per computer), and the phone uses them too.
 
 To go easy on the gears the robot speeds up gradually. Tune `RAMP_SECONDS`, `STEER_SECONDS`,
 `RELEASE_STOP` and `HARD_STOP` at the top of `ev3_drive.pyw`.
@@ -88,7 +91,8 @@ speaker (EV3 RC also has a **HORN** button):
 - **"Connecting…" forever / "getaddrinfo failed"** – the computer can't find the brick. Check it
   is connected (the brick's screen shows an IP address), then put that IP in `ev3_config.json`.
 - **"Authentication failed"** – the brick's password isn't `maker`; fix it in `ev3_config.json`.
-- **The robot drives the wrong way or curves** – use the Setup card (Test, Invert, Swap, Drift fix).
+- **The robot drives the wrong way or curves** – use the Setup card (Calibrate…, or Test, Invert,
+  Swap, Drift fix).
 - **Phone: "Can't use port 8080"** – another copy is already running; close it first.
 
 ## Tests

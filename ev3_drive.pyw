@@ -9,9 +9,11 @@ Run:   pythonw ev3_drive.pyw               (or double-click the file)
 Needs: pip install paramiko
 The brick's address and login are in ev3_config.json (see ev3_config.py).
 
-Calibrate in the SETUP card: pick which motor is each wheel, use Test to check it
-rolls forward (Invert it if not), and move Drift fix if the robot curves when it
-should go straight. Settings are saved in ev3_drive_settings.json next to this file.
+Calibrate in the SETUP card: press Calibrate…, hold each arrow and click what the
+robot actually did (it works out Swap and Invert for you). Or by hand: pick which
+motor is each wheel, use Test to check it rolls forward (Invert it if not). Move
+Drift fix if the robot curves when it should go straight. Settings are saved in
+ev3_drive_settings.json next to this file.
 
 Keys (the window must be focused):
   Up / W      forward            Left / A    turn left
@@ -79,7 +81,7 @@ MONITOR_SECONDS = 0.2    # how often motor speed/position is read back
 WHEEL_MM = 56            # wheel diameter for speed/trip (standard EV3 tyre is 56 mm)
 MOTOR_LIMIT = 1050       # ev3dev rejects speed_sp above the motor's max_speed
 TRIM_RANGE = 20          # drift fix slider goes from -20 % to +20 %
-TEST_SPEED, TEST_MS = 200, 700   # Test button: slow, short nudge of one wheel
+TEST_SPEED, TEST_MS = 200, 700   # Test button: slow, short nudge of one wheel (also Calibrate's speed)
 BATTERY_RANGE = {"Li-ion": (7.0, 8.3)}   # empty/full volts; AA packs use AA_RANGE
 AA_RANGE = (6.0, 9.0)
 
@@ -89,6 +91,12 @@ KEYS = {
     "Left": "left", "a": "left", "A": "left",
     "Right": "right", "d": "right", "D": "right",
 }
+
+# Calibrate: each arrow runs the (left pick, right pick) motors this way, with no Invert.
+# In wheel terms these are also the motions: "up" = forward, "left" = spin left, ...
+CAL_PATTERNS = {"up": (1, 1), "down": (-1, -1), "left": (-1, 1), "right": (1, -1)}
+CAL_ARROWS = {"up": "↑", "down": "↓", "left": "←", "right": "→"}
+CAL_MOTIONS = {"up": "Forward", "down": "Backward", "left": "Left", "right": "Right"}
 
 BG = "#0f1115"
 CARD = "#181b22"
@@ -392,6 +400,32 @@ def send_drive(brick, left_path, right_path, left, right, mode, invert_left=Fals
     return brick.drive(left_path, right_path, round(left * MOTOR_LIMIT), round(right * MOTOR_LIMIT))
 
 
+def cal_predict(invert_left, invert_right):
+    """What each Calibrate arrow should make the robot do with the current Invert settings,
+    as {arrow: motion} (motions use the arrow names: "up" = forward, "left" = spin left)."""
+    signs = (-1 if invert_left else 1, -1 if invert_right else 1)
+    by_pattern = {pattern: arrow for arrow, pattern in CAL_PATTERNS.items()}
+    return {arrow: by_pattern[(a * signs[0], b * signs[1])] for arrow, (a, b) in CAL_PATTERNS.items()}
+
+
+def cal_result(choice):
+    """Turn {arrow: motion the robot did} into ((swap, invert_left, invert_right), None),
+    or (None, reason) when the answers don't add up."""
+    by_motion = {motion: arrow for arrow, motion in choice.items() if motion}
+    if len(by_motion) < len(CAL_PATTERNS):
+        return None, "Pick what the robot did for every arrow."
+    if {choice["up"], choice["down"]} not in ({"up", "down"}, {"left", "right"}):
+        return None, ("↑ and ↓ run the motors exactly opposite, so they must be Forward + Backward\n"
+                      "or Left + Right. Test them again, and check both motors are plugged in.")
+    forward, spin_right = CAL_PATTERNS[by_motion["up"]], CAL_PATTERNS[by_motion["right"]]
+    # Spinning right drives the left wheel forward, so the motor that turns the same way
+    # in both is the left wheel. If that's the one picked as right, swap the picks.
+    swap = forward[0] != spin_right[0]
+    if swap:
+        forward = forward[::-1]
+    return (swap, forward[0] < 0, forward[1] < 0), None
+
+
 def port_name(port):
     return f"Motor {port[-1]}" if port.startswith("out") else port
 
@@ -621,6 +655,111 @@ class Pill(tk.Label):
         self.bind("<Button-1>", lambda e: command())
 
 
+class CalibrateWindow(tk.Toplevel):
+    """Calibrate by driving: hold an arrow, see what the robot does, click it; Save turns
+    the answers into Swap/Invert. Keys go through the app's handlers, and while this is
+    open the app's _tick sends CAL_PATTERNS (renewed timed pulses) instead of driving."""
+
+    def __init__(self, app):
+        super().__init__(app, bg=BG, padx=px(14), pady=px(12))
+        self.app = app
+        self.title("Calibrate")
+        self.resizable(False, False)
+        self.transient(app)
+        self.attributes("-topmost", True)   # the app is topmost; stay above it
+        self.choice = cal_predict(app.invert_l.get(), app.invert_r.get())
+
+        tk.Label(self, text="CALIBRATE BY DRIVING", bg=BG, fg=MUTED, font=FONT_CAPS).pack(anchor="w")
+        tk.Label(self, text="Hold an arrow key (or its Test button): the robot moves slowly.\n"
+                            "Then click what it actually did.",
+                 bg=BG, fg=FG, font=FONT, justify="left").pack(anchor="w", pady=(px(4), px(8)))
+        paths = app.brick.paths
+        lp, rp = paths.get(app.left_port.get()), paths.get(app.right_port.get())
+        if not (app.brick.connected and lp and rp and lp != rp):
+            tk.Label(self, text="Connect the brick and pick two different motors first.",
+                     bg=BG, fg=WARN, font=FONT_SMALL).pack(anchor="w", pady=(0, px(6)))
+
+        grid = tk.Frame(self, bg=CARD, padx=px(10), pady=px(8))
+        grid.pack(fill="x")
+        self.arrows, self.chips = {}, {}
+        for row, (arrow, symbol) in enumerate(CAL_ARROWS.items()):
+            a = tk.Label(grid, text=symbol, bg=TILE, fg=FG, font=FONT_GEAR, width=2)
+            a.grid(row=row, column=0, sticky="ns", pady=px(2))
+            self.arrows[arrow] = a
+            test = Pill(grid, "Test", lambda d=arrow: app._press(d), font=FONT_SMALL, padx=px(8), pady=px(2))
+            test.bind("<ButtonRelease-1>", lambda e, d=arrow: app._release(d))
+            test.grid(row=row, column=1, sticky="ns", padx=(px(6), px(12)), pady=px(2))
+            for col, (motion, name) in enumerate(CAL_MOTIONS.items(), start=2):
+                chip = Pill(grid, name, lambda d=arrow, m=motion: self._choose(d, m), font=FONT_SMALL,
+                            width=8, pady=px(4))
+                chip.grid(row=row, column=col, padx=px(2), pady=px(2))
+                self.chips[arrow, motion] = chip
+
+        self.msg = tk.Label(self, text="", bg=BG, fg=MUTED, font=FONT_SMALL, justify="left", anchor="w")
+        self.msg.pack(fill="x", pady=(px(8), 0))
+        buttons = tk.Frame(self, bg=BG)
+        buttons.pack(fill="x", pady=(px(8), 0))
+        self.save = Pill(buttons, "Save", self._save)
+        self.save.pack(side="right")
+        Pill(buttons, "Cancel", self.close).pack(side="right", padx=px(6))
+
+        self.bind("<KeyPress>", app._key_down)
+        self.bind("<KeyRelease>", app._key_up)
+        self.bind("<Escape>", lambda e: self.close())
+        self.bind("<FocusOut>", lambda e: e.widget is self and app._release_all())
+        self.protocol("WM_DELETE_WINDOW", self.close)
+
+        self.update_idletasks()   # open over the app's dashboard
+        x = app.winfo_rootx() + (app.winfo_width() - self.winfo_reqwidth()) // 2
+        self.geometry(f"+{max(0, x)}+{app.winfo_rooty() + px(60)}")
+        app._dark_title_bar(self)
+        self.focus_force()
+        self._refresh()
+
+    def test_speeds(self, held):
+        """Raw (left pick, right pick) motor speeds for the held arrow. One at a time, so
+        what the robot does is clear."""
+        if len(held) != 1:
+            return 0, 0
+        a, b = CAL_PATTERNS[next(iter(held))]
+        return a * TEST_SPEED, b * TEST_SPEED
+
+    def show(self, held):
+        for arrow, label in self.arrows.items():
+            on = arrow in held
+            label.configure(bg=ACCENT if on else TILE, fg=BG if on else FG)
+
+    def _choose(self, arrow, motion):
+        for other, chosen in self.choice.items():   # each motion belongs to one arrow
+            if chosen == motion:
+                self.choice[other] = None
+        self.choice[arrow] = motion
+        self._refresh()
+
+    def _refresh(self):
+        for (arrow, motion), chip in self.chips.items():
+            on = self.choice[arrow] == motion
+            chip.configure(bg=ACCENT if on else TILE, fg=BG if on else FG)
+        result, reason = cal_result(self.choice)
+        if result:
+            self.msg.configure(text="✓ Looks right. Save to use it (Drift fix stays as it is).", fg=GOOD)
+        else:
+            self.msg.configure(text=reason, fg=WARN if reason.startswith("↑") else MUTED)
+        self.save.configure(bg=ACCENT if result else TILE, fg=BG if result else DIM)
+
+    def _save(self):
+        result, _ = cal_result(self.choice)
+        if result:
+            self.close()
+            self.app._apply_calibration(*result)
+
+    def close(self):
+        self.app.cal_win = None
+        self.app._release_all()
+        self.destroy()
+        self.app.focus_set()
+
+
 # ---------------------------------------------------------------- app
 
 class DriveApp(tk.Tk):
@@ -670,6 +809,7 @@ class DriveApp(tk.Tk):
         self.home = None           # the robot user's home folder on the brick
         self.sound_note_id = None
         self.cards = {}            # title -> (card, head, title label), for folding
+        self.cal_win = None        # CalibrateWindow while it is open
 
         self._build()
         self._fit_screen()
@@ -683,11 +823,12 @@ class DriveApp(tk.Tk):
         threading.Thread(target=self._monitor, daemon=True).start()
         self.after(40, self._refresh_ui)
 
-    def _dark_title_bar(self):
+    def _dark_title_bar(self, window=None):
         """Dark Windows title bar matching the app (Windows 10 20H1+/11; ignored elsewhere)."""
+        window = window or self
         try:
-            self.update_idletasks()
-            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+            window.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
             on = ctypes.c_int(1)
             ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(on), ctypes.sizeof(on))
             r, g, b = (int(BG[i:i + 2], 16) for i in (1, 3, 5))
@@ -819,6 +960,8 @@ class DriveApp(tk.Tk):
         self._foldable(setup, head, "SETUP · CALIBRATE")
         Pill(head, "⇄ Swap sides", self._swap_sides, font=FONT_SMALL, padx=px(8), pady=px(2)).pack(
             side="right")
+        Pill(head, "Calibrate…", self._open_calibration, bg=blend(ACCENT, CARD, 0.6), font=FONT_SMALL,
+             padx=px(8), pady=px(2)).pack(side="right", padx=(0, px(6)))
         grid = self.setup_grid = tk.Frame(setup, bg=CARD)
         grid.pack(fill="x")
         self.port_menus, self.motor_labels = {}, {}
@@ -853,9 +996,10 @@ class DriveApp(tk.Tk):
         self.trim_label = tk.Label(drift, text="", bg=CARD, fg=FG, font=FONT_NUM, width=15, anchor="e")
         self.trim_label.pack(side="right")
         TrimSlider(drift, self.trim, TRIM_RANGE, self._trim_changed).pack(side="left", padx=px(8))
-        self.cal_hint = tk.Label(setup, text="Test: the wheel should roll FORWARD.  Wrong wheel → ⇄ Swap.  "
-                                             "Rolls backward → Invert.  Curves when going straight → "
-                                             "slide Drift fix the other way (double-click it to reset).",
+        self.cal_hint = tk.Label(setup, text="Calibrate… drives each arrow and asks what the robot did.  "
+                                             "Test: wheel should roll FORWARD (wrong wheel → ⇄ Swap, "
+                                             "backward → Invert).  Curves going straight → slide Drift fix "
+                                             "the other way (double-click resets).",
                                  bg=CARD, fg=DIM, font=FONT_SMALL, justify="left", wraplength=px(380))
         self.cal_hint.pack(anchor="w", pady=(px(6), 0))
         self._trim_changed(save=False)
@@ -979,18 +1123,24 @@ class DriveApp(tk.Tk):
         if self.tick_id is not None:
             self.after_cancel(self.tick_id)
             self.tick_id = None
-        left, right = self._wheel_speeds()
+        calibrating = self.cal_win is not None
+        left, right = self.cal_win.test_speeds(self.held) if calibrating else self._wheel_speeds()
         paths = self.brick.paths
         lp, rp = paths.get(self.left_port.get()), paths.get(self.right_port.get())
         if (left or right) and self.brick.connected and lp and rp and lp != rp:
-            send_drive(self.brick, lp, rp, left, right, self.mode.get(),
-                       self.invert_l.get(), self.invert_r.get())
+            if calibrating:   # raw pattern, no Invert; slow enough to skip the ramp, like Test
+                self.brick.drive(lp, rp, left, right)
+            else:
+                send_drive(self.brick, lp, rp, left, right, self.mode.get(),
+                           self.invert_l.get(), self.invert_r.get())
             self.moving = True
             self.tick_id = self.after(RENEW_MS, self._tick)
         elif self.moving:
             self.brick.stop(released=True)
             self.moving = False
         self.dpad.show(self.held)
+        if calibrating:
+            self.cal_win.show(self.held)
 
     # ---------- connection & readback ----------
     def _monitor(self):
@@ -1139,6 +1289,24 @@ class DriveApp(tk.Tk):
                        "trim": self.trim.get(), "mode": self.mode.get()})
 
     # ---------- calibration ----------
+    def _open_calibration(self):
+        if self.cal_win is not None:
+            self.cal_win.lift()
+            return
+        self._release_all()
+        self.cal_win = CalibrateWindow(self)
+
+    def _apply_calibration(self, swap, invert_left, invert_right):
+        if swap:
+            self._swap_sides()
+        self.invert_l.set(invert_left)
+        self.invert_r.set(invert_right)
+        self._settings_changed()
+        inv = lambda on: " (inverted)" if on else ""
+        self.cal_hint.configure(
+            text=f"Calibrated: left wheel = {port_name(self.left_port.get())}{inv(invert_left)}, right wheel = "
+                 f"{port_name(self.right_port.get())}{inv(invert_right)}.  Drive ↑ to check it.", fg=GOOD)
+
     def _swap_sides(self):
         left, right = self.left_port.get(), self.right_port.get()
         self.left_port.set(right)

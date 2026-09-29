@@ -48,7 +48,8 @@ Pipeline, called every `RENEW_MS` (120 ms) while a key is held, and immediately 
      This protects the robot's gears; don't remove it.
    - Invert is applied after ramping (motor space = wheel space × ±1).
    - Normal gears: `Brick.drive()` → `speed_sp` + `time_sp=PULSE_MS` + `run-timed` (speed-regulated,
-     expires on its own). Turbo: `Brick.drive_direct()` → `duty_cycle_sp` + `run-direct` (raw power,
+     expires on its own). While the `CalibrateWindow` is open, `_tick` instead sends that window's
+     raw `CAL_PATTERNS` at `TEST_SPEED` straight to `Brick.drive()` (no Invert, no ramp). Turbo: `Brick.drive_direct()` → `duty_cycle_sp` + `run-direct` (raw power,
      no timeout) plus a heartbeat write to `$HB`.
 3. Key release → `Brick.stop(released=True)` uses `RELEASE_STOP`; Space / STOP button / focus loss /
    phone timeout → `Brick.stop()` uses `HARD_STOP`. Stop actions: `coast` < `brake` < `hold`.
@@ -58,6 +59,12 @@ Pipeline, called every `RENEW_MS` (120 ms) while a key is held, and immediately 
 `echo … > /sys/class/tacho-motor/motorN/…` per call, never waits for output) and `mon` (readback via
 a `mon` shell function, every `MONITOR_SECONDS`). `watchdog_script()` starts a background loop on the
 brick that stops all motors if the Turbo heartbeat goes stale for `WATCHDOG_CS` or the SSH session dies.
+
+**Calibrate…** (`CalibrateWindow`): each arrow runs the picked motors in a fixed raw pattern and the
+user clicks what the robot did. `cal_result()` turns the answers into swap + invert_left/right, so
+calibration still ends up as the same settings keys (and the phone needs no change); `cal_predict()`
+pre-fills the answers from the current Invert settings. The window routes its keys through the app's
+`_key_down`/`_key_up`, so auto-repeat, focus loss and Space behave exactly like driving.
 
 Gears live in `MODES` (name, % of `MAX_SPEED`). ev3dev rejects `speed_sp` above the motor's
 `max_speed`, hence `MOTOR_LIMIT` (1050) as the clamp and the full-power scale.
