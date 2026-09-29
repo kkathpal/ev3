@@ -85,6 +85,28 @@ speaker (EV3 RC also has a **HORN** button):
   loud clips work best).
 - **Volume** − / +: the brick's speaker volume.
 
+## Setting up more bricks
+
+To make several bricks the same (each keeps its own name), `ev3_setup.py` copies your EV3
+programs to a brick. These are the folders next to this one that have a `main.py`, made with
+the VS Code EV3 extension, like `../brick1_test`. They go to `/home/robot/<folder>` on the
+brick, just like the extension's "Download and Run". The script also checks the brick's name,
+battery, motors and free space. It never moves a motor or deletes anything on the brick.
+
+```
+python ev3_setup.py 192.168.0.1 --dry-run   # list what would be copied
+python ev3_setup.py 192.168.0.1             # copy (use each brick's address in turn)
+```
+
+Run it once per brick, and again after you change a program. Then drive any brick by giving
+its address: `python ev3_drive.pyw ev3kishan.local` (or its IP).
+
+Over Bluetooth, the PC needs a network connection to the brick, not just pairing. On the brick,
+turn on Wireless and Networks → Tethering → Bluetooth. On Windows, in Devices and Printers,
+right-click the brick → Connect using → Access point. Windows usually keeps only one such
+connection at a time, so set up one brick after another. A USB Wi-Fi dongle on each brick lets
+them all be reachable at once.
+
 ## Troubleshooting
 
 - **Nothing happens when I double-click** – run it from a terminal instead
@@ -99,4 +121,5 @@ speaker (EV3 RC also has a **HORN** button):
 
 ## Tests
 
-`python -m unittest discover -s tests -v` checks the driving logic without a robot.
+`python -m unittest discover -s tests -v` checks the driving logic and the brick setup script
+without a robot.

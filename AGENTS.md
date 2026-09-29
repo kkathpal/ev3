@@ -14,7 +14,9 @@ are hand-drawn `tkinter`. No build step.
 | `ev3_widget.pyw` | **EV3 Status** widget: always-on-top window showing battery, CPU/RAM, ports, motors, sensors; jog motors, switch sensor modes, free memory (sudo), stop the running program; Sound card (play built-in/uploaded WAVs, text-to-speech, volume, upload). Independent of the other files. |
 | `ev3_sound.py` | Sound commands, sound-list query/parsing and WAV upload, shared by the drive app and the widget (each builds its own Sound card UI). |
 | `ev3_config.py` | Loads `ev3_config.json` (brick address + SSH login) for all three apps. |
+| `ev3_setup.py` | Copies the EV3 program folders next to this project (`../<name>/main.py`, VS Code EV3 extension projects) to `/home/<user>/<name>` on a brick over SFTP, like "Download and Run" (skips dotfiles/caches, `chmod 755` on `#!` scripts), then prints read-only brick facts. Used to make several bricks identical. Never deletes on the brick, never moves motors. `take_args()` strips `--dry-run` / `--programs DIR` before `ev3_config` reads the address. |
 | `tests/test_drive.py` | Offline tests for the drive logic (fake brick, fake clock). |
+| `tests/test_setup.py` | Offline tests for `ev3_setup.py` (temp program folders, fake SFTP). |
 | `ev3_drive_settings.json` | Created at runtime, git-ignored. Motor ports, per-wheel invert, drift trim, last gear. Written by the desktop app, read (and `mode` written) by the phone server. |
 
 `.pyw` = Python run without a console on Windows. Run with `python` (not `pythonw`) to see tracebacks.
@@ -26,6 +28,7 @@ pip install -r requirements.txt
 python ev3_drive.pyw [brick-address]     # address overrides ev3_config.json
 python ev3_phone.py  [brick-address] [--port N]   # then open the printed http://<PC>:<port> on a phone
 python ev3_widget.pyw [brick-address]
+python ev3_setup.py [brick-address] [--dry-run] [--programs DIR]   # copy EV3 programs to a brick
 python -m unittest discover -s tests -v  # offline, no robot needed
 ```
 
