@@ -20,6 +20,31 @@ computer or phone, over the same SSH connection the VS Code EV3 extension uses.
    On a Mac, Wi-Fi (a USB Wi-Fi dongle on the brick) or USB is easiest; recent macOS versions
    no longer support Bluetooth networking.
 
+## One brick per laptop
+
+Each laptop can have its own copy of this project and drive its own brick. On every laptop:
+
+1. Install Python 3 (see [Setup](#setup)).
+2. Get the code: `git clone https://github.com/kkathpal/ev3.git`, or on
+   [github.com/kkathpal/ev3](https://github.com/kkathpal/ev3) click **Code → Download ZIP** and
+   unzip it.
+3. In the project folder: `python -m pip install -r requirements.txt`
+4. Tell this laptop which brick is its own, using the brick's name or IP:
+
+   ```
+   python ev3_config.py ev3kishan
+   ```
+
+   This is saved in `ev3_config.json`, which stays on that laptop (it's not uploaded to
+   GitHub), so each laptop keeps its own brick. Run `python ev3_config.py` with no name to see
+   which brick it's set to.
+5. Connect that brick to that laptop (Bluetooth, USB or Wi-Fi) and run `python ev3_drive.pyw`.
+
+If the name isn't found, use the IP address shown on the brick's screen instead, for example
+`python ev3_config.py 192.168.0.1`. To get the newest code later, run `git pull` (or download
+the ZIP again, keeping your `ev3_config.json`). Your brick setting isn't changed. The phone
+controller works on every laptop at the same time, since each picks its own free port.
+
 ## Run
 
 | | Windows | macOS / Linux |
@@ -46,8 +71,8 @@ The brick's address and login live in `ev3_config.json`, created next to the app
 ```
 
 If you rename the brick (`sudo hostnamectl set-hostname mycar` on the brick, also replace `ev3dev`
-in its `/etc/hosts`, then reboot), set `"host": "mycar.local"`. If `.local` names don't connect,
-use the brick's IP address. For a one-off, an address on the command line wins:
+in its `/etc/hosts`, then reboot), run `python ev3_config.py mycar` (or set
+`"host": "mycar.local"` in the file). If `.local` names don't connect, use the brick's IP address. For a one-off, an address on the command line wins:
 `python ev3_drive.pyw 192.168.0.1`. The file is not committed to git, so each computer has its own.
 
 ## Driving
@@ -112,7 +137,8 @@ them all be reachable at once.
 - **Nothing happens when I double-click** – run it from a terminal instead
   (`python ev3_drive.pyw`) to see the error. A missing `paramiko` shows a message box.
 - **"Connecting…" forever / "getaddrinfo failed"** – the computer can't find the brick. Check it
-  is connected (the brick's screen shows an IP address), then put that IP in `ev3_config.json`.
+  is connected (the brick's screen shows an IP address), then use that IP:
+  `python ev3_config.py <IP>`.
 - **"Authentication failed"** – the brick's password isn't `maker`; fix it in `ev3_config.json`.
 - **The robot drives the wrong way or curves** – use the Setup card (Calibrate…, or Test, Invert,
   Swap, Drift fix).

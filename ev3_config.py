@@ -1,7 +1,12 @@
 """Brick connection settings shared by the EV3 apps, kept in ev3_config.json next to them.
 
-The file is created with ev3dev's defaults on first run. Edit it to use another brick name
-(e.g. after renaming the brick with hostnamectl) or login. An address on the command line
+The file is created with ev3dev's defaults on first run. It is not in git, so every laptop
+keeps its own: set which brick this laptop drives with
+
+    python ev3_config.py ev3kishan        (a brick name; ".local" is added)
+    python ev3_config.py 192.168.0.1      (or its IP address)
+
+or edit the file (also for another login). An address on the command line of an app
 still wins, for a one-off:   python ev3_drive.pyw 192.168.0.1
 """
 import json
@@ -32,3 +37,37 @@ def load():
     if len(sys.argv) > 1:
         config["host"] = sys.argv[1]
     return config
+
+
+def brick_address(name):
+    """A brick name as typed ("ev3kishan") to an address: bare names get ".local" (how
+    ev3dev bricks are found on the network); IPs and full names stay as they are."""
+    name = name.strip()
+    return name if "." in name or ":" in name else f"{name}.local"
+
+
+def save_host(host):
+    """Make `host` this laptop's brick, keeping the rest of the file."""
+    config = dict(DEFAULTS)
+    try:
+        with open(CONFIG_FILE, encoding="utf-8") as f:
+            saved = json.load(f)
+        if isinstance(saved, dict):
+            config.update({k: v for k, v in saved.items() if k in DEFAULTS and isinstance(v, str) and v})
+    except (OSError, ValueError):
+        pass
+    config["host"] = host
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+        f.write("\n")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2 or sys.argv[1].startswith("-"):
+        current = load()["host"] if len(sys.argv) == 1 else "?"
+        sys.exit(f"This laptop drives: {current}\n"
+                 f"To change it:  python ev3_config.py <brick name or IP>   (e.g. ev3kishan)")
+    host = brick_address(sys.argv[1])
+    save_host(host)
+    print(f"This laptop now drives {host}.\n"
+          f"(Saved in ev3_config.json, which stays on this laptop.) Start it with:  python ev3_drive.pyw")
