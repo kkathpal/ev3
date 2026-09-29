@@ -1,7 +1,7 @@
 """Set up an EV3 brick with your programs, so several bricks can be made identical.
 
-Copies every EV3 program folder on this PC (folders like ../brick1_test with a main.py,
-made with the VS Code EV3 extension) to /home/robot/<folder> on the brick, the same way
+Copies every EV3 program folder in programs/ (folders like programs/brick1_test with a
+main.py, made with the VS Code EV3 extension) to /home/robot/<folder> on the brick, the same way
 the extension's "Download and Run" does: hidden files (.vscode, ...) and Python caches are
 skipped, and main.py is made runnable. Then it checks the brick: name, battery, motors,
 free space. It never moves a motor, and never deletes anything on the brick (files your
@@ -39,7 +39,7 @@ DRY_RUN, PROGRAMS_ARG = take_args()
 import ev3_config   # noqa: E402  (after take_args, which cleans the command line for it)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PROGRAMS_DIR = os.path.dirname(HERE)   # the folder holding this dashboard and the EV3 programs
+PROGRAMS_DIR = os.path.join(HERE, "programs")   # the EV3 programs, one folder each
 SKIP_DIRS = {"__pycache__", ".venv", "venv"}
 SKIP_SUFFIXES = (".pyc", ".pyo")
 
@@ -58,7 +58,7 @@ def is_program(path):
 
 
 def find_programs(root):
-    """EV3 program folders directly inside `root` (this dashboard has no main.py, so it isn't one)."""
+    """EV3 program folders directly inside `root`."""
     try:
         names = sorted(os.listdir(root))
     except OSError:

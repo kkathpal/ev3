@@ -109,12 +109,18 @@ speaker (EV3 RC also has a **HORN** button):
   loud clips work best).
 - **Volume** − / +: the brick's speaker volume.
 
+## EV3 programs
+
+The `programs` folder holds EV3 MicroPython programs that run on the brick itself, one folder
+each, like `programs/brick1_test`. Open a program's folder in VS Code with the LEGO EV3
+MicroPython extension and use **Download and Run**, or copy them all with `ev3_setup.py` (below).
+Add a new program by creating it with the extension inside `programs`.
+
 ## Setting up more bricks
 
 To make several bricks the same (each keeps its own name), `ev3_setup.py` copies your EV3
-programs to a brick. These are the folders next to this one that have a `main.py`, made with
-the VS Code EV3 extension, like `../brick1_test`. They go to `/home/robot/<folder>` on the
-brick, just like the extension's "Download and Run". The script also checks the brick's name,
+programs to a brick. These are the folders in `programs` that have a `main.py`. They go to
+`/home/robot/<folder>` on the brick, just like the extension's "Download and Run". The script also checks the brick's name,
 battery, motors and free space. It never moves a motor or deletes anything on the brick.
 
 ```

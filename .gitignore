@@ -7,4 +7,6 @@ ev3_drive_settings.json
 ev3_config.json
 
 .vscode/
+# ...except in EV3 programs: it holds the EV3 extension's "Download and Run" setup
+!programs/*/.vscode/
 .DS_Store
