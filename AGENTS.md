@@ -10,7 +10,7 @@ are hand-drawn `tkinter`. No build step.
 | File | What it is |
 |---|---|
 | `ev3_drive.pyw` | **EV3 RC**: drive a two-motor robot from the keyboard like an RC car, with a live dashboard (speedometer, wheel meters, trip, battery, latency) and a calibration card. Holds all the shared drive logic. |
-| `ev3_phone.py` + `ev3_phone.html` | Phone controller: a small HTTP server on the PC (port 8080) serving a touch page. **Imports `ev3_drive.pyw`** (`SourceFileLoader`) and reuses its `Brick`, `wheel_commands`, `send_drive`, constants and settings. |
+| `ev3_phone.py` + `ev3_phone.html` | Phone controller: a small HTTP server on the PC serving a touch page. Each run `start_server()` opens it on a random free port in `PORT_RANGE` (8000–8999), or on `--port N` (`take_port_arg()` removes that before `ev3_config` reads the brick address). `Server.allow_reuse_address` is off on Windows, where it would let two copies share a port. **Imports `ev3_drive.pyw`** (`SourceFileLoader`) and reuses its `Brick`, `wheel_commands`, `send_drive`, constants and settings. |
 | `ev3_widget.pyw` | **EV3 Status** widget: always-on-top window showing battery, CPU/RAM, ports, motors, sensors; jog motors, switch sensor modes, free memory (sudo), stop the running program; Sound card (play built-in/uploaded WAVs, text-to-speech, volume, upload). Independent of the other files. |
 | `ev3_sound.py` | Sound commands, sound-list query/parsing and WAV upload, shared by the drive app and the widget (each builds its own Sound card UI). |
 | `ev3_config.py` | Loads `ev3_config.json` (brick address + SSH login) for all three apps. |
@@ -24,7 +24,7 @@ are hand-drawn `tkinter`. No build step.
 ```
 pip install -r requirements.txt
 python ev3_drive.pyw [brick-address]     # address overrides ev3_config.json
-python ev3_phone.py  [brick-address]     # then open the printed http://<PC>:8080 on a phone
+python ev3_phone.py  [brick-address] [--port N]   # then open the printed http://<PC>:<port> on a phone
 python ev3_widget.pyw [brick-address]
 python -m unittest discover -s tests -v  # offline, no robot needed
 ```

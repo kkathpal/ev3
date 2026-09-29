@@ -6,7 +6,9 @@ app: same gears, Turbo, and calibration (read from ev3_drive_settings.json).
 
 Run:   python ev3_phone.py               (brick address from ev3_config.json)
        python ev3_phone.py 192.168.0.1   (brick at a specific address)
-Then open the printed http://<this PC>:8080 address on your phone.
+       python ev3_phone.py --port 8090   (use this port)
+It uses a random free port from 8000-8999 (unless --port picks one) and prints
+the http://<this PC>:<port> address to open on your phone.
 
 Safety: the phone re-sends the held buttons every ~100 ms. Each command only runs
 the motors briefly (Turbo is covered by the brick-side watchdog), and this server
@@ -15,6 +17,7 @@ finger, locking the phone or losing Wi-Fi stops the robot.
 """
 import json
 import os
+import random
 import socket
 import sys
 import threading
@@ -23,9 +26,26 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.machinery import SourceFileLoader
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def take_port_arg():
+    """Remove `--port N` from the command line and return N (or None). It must go before
+    ev3_drive loads, since ev3_config reads the first argument as the brick's address."""
+    args = sys.argv
+    if "--port" not in args:
+        return None
+    i = args.index("--port")
+    if i + 1 < len(args) and args[i + 1].isdigit():
+        port = int(args[i + 1])
+        del args[i:i + 2]
+        return port
+    sys.exit("Use:  python ev3_phone.py [brick-address] --port 8090")
+
+
+PORT_ARG = take_port_arg()
 rc = SourceFileLoader("ev3_drive", os.path.join(HERE, "ev3_drive.pyw")).load_module()
 
-PORT = 8080
+PORT_RANGE = (8000, 8999)   # each run uses a random free port from here (--port N picks one)
 PAGE = os.path.join(HERE, "ev3_phone.html")
 PHONE_TIMEOUT = 0.35   # stop if the driving phone sends nothing for this long (s)
 DIRECTIONS = {"up", "down", "left", "right"}
@@ -188,6 +208,9 @@ controller = None
 
 class Server(ThreadingHTTPServer):
     daemon_threads = True
+    # On Windows, address reuse lets a second copy take a port that's already in use
+    # (and phones then reach either one), so there a busy port must fail instead.
+    allow_reuse_address = sys.platform != "win32"
 
     def handle_error(self, request, client_address):
         # A phone closing the tab or switching apps mid-request is normal; don't print tracebacks.
@@ -271,18 +294,35 @@ def lan_addresses():
     return found
 
 
+def start_server(wanted=None):
+    """The web server on the `wanted` port, or on a random free port in PORT_RANGE.
+    Trying to open the server is the check, so no other program can take the port
+    between checking and using it."""
+    if wanted:
+        try:
+            return Server(("0.0.0.0", wanted), Handler)
+        except OSError as e:
+            sys.exit(f"Can't use port {wanted} ({e.strerror or e}).\n"
+                     f"Something else is using it: pick another, or leave out --port for a random free one.")
+    ports = list(range(PORT_RANGE[0], PORT_RANGE[1] + 1))
+    random.shuffle(ports)
+    for port in ports:
+        try:
+            return Server(("0.0.0.0", port), Handler)
+        except OSError:
+            continue   # in use: try another
+    sys.exit(f"No free port between {PORT_RANGE[0]} and {PORT_RANGE[1]}.")
+
+
 def main():
     global controller
-    try:
-        server = Server(("0.0.0.0", PORT), Handler)
-    except OSError as e:
-        sys.exit(f"Can't use port {PORT} ({e}).\n"
-                 f"Is ev3_phone.py already running? Close it, or change PORT at the top of ev3_phone.py.")
+    server = start_server(PORT_ARG)
+    port = server.server_address[1]
     controller = Controller()
-    print("EV3 RC phone controller")
+    print("\nEV3 RC phone controller")
     print(f"  brick: {rc.HOST}")
     for ip in lan_addresses():
-        print(f"  open on your phone:  http://{ip}:{PORT}")
+        print(f"  open on your phone:  http://{ip}:{port}")
     print("  (phone must be on the same Wi-Fi; allow Python through the firewall if asked)")
     print("  Ctrl+C to quit")
     try:

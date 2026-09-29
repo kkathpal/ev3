@@ -28,8 +28,9 @@ computer or phone, over the same SSH connection the VS Code EV3 extension uses.
 | Phone | `python ev3_phone.py` | `python3 ev3_phone.py` |
 | Status | `python ev3_widget.pyw` (or double-click) | `python3 ev3_widget.pyw` |
 
-For the phone, open the `http://…:8080` address it prints (the phone must be on the same Wi-Fi;
-allow Python through the firewall if asked).
+For the phone, the server picks a random free port (8000–8999) each time, or the one you give with
+`python ev3_phone.py --port 8090`. Open the `http://…:<port>` address it prints (the phone must be
+on the same Wi-Fi; allow Python through the firewall if asked).
 
 On smaller screens, click a card's title (▾) to fold it away; the apps fold the least-needed
 cards themselves when the window wouldn't fit.
@@ -93,7 +94,8 @@ speaker (EV3 RC also has a **HORN** button):
 - **"Authentication failed"** – the brick's password isn't `maker`; fix it in `ev3_config.json`.
 - **The robot drives the wrong way or curves** – use the Setup card (Calibrate…, or Test, Invert,
   Swap, Drift fix).
-- **Phone: "Can't use port 8080"** – another copy is already running; close it first.
+- **Phone: "Can't use port …"** – something else (maybe another copy) is using the port you gave
+  with `--port`; close it, pick another, or leave out `--port` to get a random free one.
 
 ## Tests
 
