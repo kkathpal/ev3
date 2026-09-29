@@ -15,6 +15,7 @@ are hand-drawn `tkinter`. No build step.
 | `ev3_sound.py` | Sound commands, sound-list query/parsing and WAV upload, shared by the drive app and the widget (each builds its own Sound card UI). |
 | `ev3_config.py` | Loads `ev3_config.json` (brick address + SSH login) for all three apps. Each laptop has its own (git-ignored) and drives its own brick: `python ev3_config.py <name or IP>` saves the host (`brick_address()` adds `.local` to bare names; `save_host()` keeps the login). |
 | `tests/test_config.py` | Offline tests for `ev3_config.py` (temp config file). |
+| `install.bat` / `install.sh` | Per-laptop setup: Python (winget on Windows, if missing), `pip install -r requirements.txt`, tkinter check, `ev3_config.py <brick>`, optional desktop shortcut (Windows). Safe to re-run. `.gitattributes` keeps `.bat` CRLF and `.sh` LF. |
 | `ev3_setup.py` | Copies the EV3 program folders next to this project (`../<name>/main.py`, VS Code EV3 extension projects) to `/home/<user>/<name>` on a brick over SFTP, like "Download and Run" (skips dotfiles/caches, `chmod 755` on `#!` scripts), then prints read-only brick facts. Used to make several bricks identical. Never deletes on the brick, never moves motors. `take_args()` strips `--dry-run` / `--programs DIR` before `ev3_config` reads the address. |
 | `tests/test_drive.py` | Offline tests for the drive logic (fake brick, fake clock). |
 | `tests/test_setup.py` | Offline tests for `ev3_setup.py` (temp program folders, fake SFTP). |

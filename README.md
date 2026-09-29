@@ -24,21 +24,20 @@ computer or phone, over the same SSH connection the VS Code EV3 extension uses.
 
 Each laptop can have its own copy of this project and drive its own brick. On every laptop:
 
-1. Install Python 3 (see [Setup](#setup)).
-2. Get the code: `git clone https://github.com/kkathpal/ev3.git`, or on
-   [github.com/kkathpal/ev3](https://github.com/kkathpal/ev3) click **Code → Download ZIP** and
-   unzip it.
-3. In the project folder: `python -m pip install -r requirements.txt`
-4. Tell this laptop which brick is its own, using the brick's name or IP:
+1. Get the code: on [github.com/kkathpal/ev3](https://github.com/kkathpal/ev3) click
+   **Code → Download ZIP** and unzip it, or run `git clone https://github.com/kkathpal/ev3.git`.
+2. Run the installer in the project folder:
+   - **Windows:** double-click `install.bat`. It installs Python if it's missing (using
+     winget), then the packages, asks for this laptop's brick (e.g. `ev3kishan`), and can add
+     an **EV3 RC** shortcut to the desktop.
+   - **Mac / Linux:** run `sh install.sh`. It installs the packages and asks for the brick. It
+     needs Python 3 from python.org first (see [Setup](#setup)).
+3. Connect that brick to that laptop (Bluetooth, USB or Wi-Fi) and start **EV3 RC**.
 
-   ```
-   python ev3_config.py ev3kishan
-   ```
-
-   This is saved in `ev3_config.json`, which stays on that laptop (it's not uploaded to
-   GitHub), so each laptop keeps its own brick. Run `python ev3_config.py` with no name to see
-   which brick it's set to.
-5. Connect that brick to that laptop (Bluetooth, USB or Wi-Fi) and run `python ev3_drive.pyw`.
+The brick setting is saved in `ev3_config.json`, which stays on that laptop (it's not uploaded
+to GitHub), so each laptop keeps its own brick. To change it later, run the installer again or
+`python ev3_config.py <brick name or IP>`. Run `python ev3_config.py` with no name to see which
+brick the laptop is set to.
 
 If the name isn't found, use the IP address shown on the brick's screen instead, for example
 `python ev3_config.py 192.168.0.1`. To get the newest code later, run `git pull` (or download
