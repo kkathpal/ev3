@@ -1,3 +1,5 @@
 * text=auto
 *.bat text eol=crlf
 *.sh text eol=lf
+# EV3 programs run on the brick (Linux): a CRLF #! line would stop them starting
+programs/** text eol=lf
