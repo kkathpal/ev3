@@ -66,21 +66,30 @@
   button { font: inherit; color: var(--fg); background: var(--tile); border: 0; border-radius: 10px; }
   .small { padding: 7px 12px; font-size: 12px; }
 
-  .pad { display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr);
-    gap: 10px; width: min(100%, 330px, 38vh); aspect-ratio: 1; margin: 0 auto; touch-action: none; }
-  .key { display: grid; place-items: center; border-radius: 18px; background: var(--tile);
-    border: 1px solid var(--line); touch-action: none; transition: background .06s, transform .06s; }
-  .key svg { width: 38%; fill: var(--fg); }
-  .key.on { background: var(--accent); border-color: #9ccbff; transform: scale(.96); }
-  .key.on svg { fill: var(--bg); }
-  .k-up { grid-area: 1 / 2 } .k-left { grid-area: 2 / 1 } .k-right { grid-area: 2 / 3 } .k-down { grid-area: 3 / 2 }
-  .stop { grid-area: 2 / 2; border-radius: 50%; background: var(--bad); color: var(--bg); font-weight: 900;
-    letter-spacing: .04em; box-shadow: 0 0 0 6px #ff636333; touch-action: none; }
-  .stop:active { transform: scale(.94); }
-  .horn { grid-area: 3 / 3; align-self: center; justify-self: center; width: 78%; aspect-ratio: 1;
-    border-radius: 50%; background: var(--track); color: var(--warn); font-size: 11px; font-weight: 700;
-    letter-spacing: .04em; border: 1px solid var(--line); touch-action: none; }
-  .horn:active { background: var(--warn); color: var(--bg); transform: scale(.94); }
+  .pad { width: min(100%, 300px, 34vh); margin: 0 auto; touch-action: none; }
+  /* Joystick: the knob follows the thumb up to STICK_TRAVEL of the width from the centre */
+  .stick { position: relative; width: 100%; aspect-ratio: 1; border-radius: 50%; touch-action: none;
+    background: radial-gradient(circle closest-side, var(--tile) 0 66%, var(--card) 67% 100%);
+    border: 1px solid var(--line); transition: border-color .1s; --gear: var(--accent); }
+  .stick.on { border-color: var(--gear); }
+  .stick svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .stick .guide { stroke: var(--line); stroke-width: .6; fill: none; }
+  .stick .ring { stroke: var(--line); stroke-width: .6; stroke-dasharray: 2 2; fill: none; }
+  .stick .arrow { fill: var(--dim); transition: fill .1s; }
+  .stick.on .arrow { fill: var(--muted); }
+  .knob { position: absolute; left: 50%; top: 50%; width: 34%; aspect-ratio: 1; border-radius: 50%;
+    transform: translate(-50%, -50%); background: var(--track); border: 1px solid var(--line);
+    box-shadow: 0 4px 14px #0008; transition: transform .14s ease-out, background .1s; pointer-events: none; }
+  .knob::after { content: ""; position: absolute; inset: 30%; border-radius: 50%; border: 1px solid var(--dim); }
+  .stick.on .knob { transition: background .1s; background: var(--gear); border-color: var(--gear); }
+  .stick.on .knob::after { border-color: #0f111580; }
+  .padrow { display: grid; grid-template-columns: 2fr 1fr; gap: 10px; margin-top: 12px; }
+  .stop { padding: 13px 0; border-radius: 12px; background: var(--bad); color: var(--bg); font-weight: 900;
+    letter-spacing: .06em; box-shadow: 0 0 0 4px #ff636333; touch-action: none; }
+  .stop:active { transform: scale(.97); }
+  .horn { padding: 13px 0; border-radius: 12px; background: var(--track); color: var(--warn); font-size: 12px;
+    font-weight: 700; letter-spacing: .06em; border: 1px solid var(--line); touch-action: none; }
+  .horn:active { background: var(--warn); color: var(--bg); transform: scale(.97); }
 
   .gears { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
   .gear { padding: 10px 4px; border: 1px solid transparent; text-align: center; }
@@ -164,12 +173,19 @@
 
   <section class="card">
     <div class="pad" id="pad">
-      <div class="key k-up" data-dir="up"><svg viewBox="0 0 24 24"><path d="M12 4 21 18H3z"/></svg></div>
-      <div class="key k-left" data-dir="left"><svg viewBox="0 0 24 24"><path d="M4 12 18 3v18z"/></svg></div>
-      <button class="stop" id="stop">STOP</button>
-      <div class="key k-right" data-dir="right"><svg viewBox="0 0 24 24"><path d="M20 12 6 21V3z"/></svg></div>
-      <div class="key k-down" data-dir="down"><svg viewBox="0 0 24 24"><path d="M12 20 3 6h18z"/></svg></div>
-      <button class="horn" id="horn">HORN</button>
+      <div class="stick" id="stick" aria-label="joystick: drag to drive">
+        <svg viewBox="0 0 100 100">
+          <path class="guide" d="M50 17V83M17 50H83"/>
+          <circle class="ring" cx="50" cy="50" r="33"/>
+          <path class="arrow" d="M50 3 55 9H45z"/><path class="arrow" d="M50 97 55 91H45z"/>
+          <path class="arrow" d="M3 50 9 45V55z"/><path class="arrow" d="M97 50 91 45V55z"/>
+        </svg>
+        <div class="knob" id="knob"></div>
+      </div>
+      <div class="padrow">
+        <button class="stop" id="stop">STOP</button>
+        <button class="horn" id="horn">HORN</button>
+      </div>
     </div>
     <div class="gears" id="gears"></div>
     <div class="warn" id="warn"></div>
@@ -177,7 +193,7 @@
   </section>
 </div>
 
-<footer id="foot">Hold arrows to drive · two fingers to curve</footer>
+<footer id="foot">Drag the stick to drive · further = faster · let go to stop</footer>
 
 <div class="sheet" id="setupSheet">
   <div class="sheet-head"><h2>Setup · Calibrate</h2><button class="small" id="setupClose">Done</button></div>
@@ -214,10 +230,13 @@
 <script>
 const GEAR_COLORS = { Slow: "#3ddc97", Normal: "#5aa9ff", Fast: "#ffb547", Turbo: "#ff4fd8" };
 const $ = id => document.getElementById(id);
-const held = new Set();            // directions currently pressed
-const pointers = new Map();        // pointerId -> direction
+const STICK_TRAVEL = 0.33;         // knob centre's reach, as a share of the joystick's width (= full speed)
+const SEND_GAP_MS = 90;            // stick moves go to the PC at most this often (the brick is slow)
+const held = new Set();            // arrow keys held (keyboard, e.g. testing in a desktop browser)
+let stick = null, stickPointer = null;   // [x, y] each -1..1 (right, forward) while a thumb is on the joystick
 let mode = "Normal", maxCm = 56, segs = [], built = false;
-let inFlight = false, lastState = 0, phoneMs = null, failures = 0;
+let inFlight = false, lastSent = 0, lastState = 0, phoneMs = null, failures = 0;
+let hardStop = false;              // STOP / focus loss: a late reply is answered with /stop (hold), not a release
 
 // ---------- speedometer (segmented arc like the desktop app) ----------
 function mix(a, b, t) {
@@ -275,26 +294,51 @@ function paintGears() {
     b.style.borderColor = on ? c : "transparent";
     b.querySelector("b").style.color = on ? c : "";
   });
+  $("stick").style.setProperty("--gear", GEAR_COLORS[mode] || "var(--accent)");
 }
 function setMode(m) {
   mode = m; paintGears();
   post("/mode", { mode: m });
 }
 
-// ---------- input: multi-touch hold-to-drive ----------
-function paintKeys() { document.querySelectorAll(".key").forEach(k => k.classList.toggle("on", held.has(k.dataset.dir))); }
+// ---------- input: joystick (one thumb; direction steers, distance sets speed) ----------
+function driving() { return !!stick || held.size > 0; }
+function moveStick(e) {
+  const r = $("stick").getBoundingClientRect(), travel = r.width * STICK_TRAVEL;
+  let dx = e.clientX - (r.left + r.width / 2), dy = e.clientY - (r.top + r.height / 2);
+  const d = Math.hypot(dx, dy);
+  if (d > travel) { dx *= travel / d; dy *= travel / d; }   // knob stops at the rim: full speed
+  stick = [+(dx / travel).toFixed(3), +(-dy / travel).toFixed(3)];
+  $("knob").style.transform = `translate(${dx}px, ${dy}px) translate(-50%, -50%)`;
+}
+function releaseStick() {
+  stickPointer = null; stick = null;
+  $("stick").classList.remove("on");
+  $("knob").style.transform = "";   // springs back to the centre
+}
+$("stick").addEventListener("pointerdown", e => {
+  e.preventDefault();
+  if (stickPointer !== null) return;   // a second finger doesn't take over
+  stickPointer = e.pointerId; $("stick").setPointerCapture(e.pointerId);
+  $("stick").classList.add("on");
+  hardStop = false;
+  moveStick(e); send(true);            // react instantly, don't wait for the tick
+});
+$("stick").addEventListener("pointermove", e => {
+  if (e.pointerId !== stickPointer) return;
+  moveStick(e);                        // the knob follows every move; the PC gets one every SEND_GAP_MS
+  if (performance.now() - lastSent >= SEND_GAP_MS) send(false);
+});
+["pointerup", "pointercancel", "lostpointercapture"].forEach(t => $("stick").addEventListener(t, e => {
+  if (e.pointerId !== stickPointer) return;
+  releaseStick(); send(true);          // no stick, no keys: the PC stops the robot
+}));
 function recompute() {
   const before = [...held].sort().join();
-  held.clear(); pointers.forEach(d => held.add(d)); keys.forEach(d => held.add(d));
-  paintKeys();
+  held.clear(); keys.forEach(d => held.add(d));
   if ([...held].sort().join() !== before) send(true);   // react instantly, don't wait for the tick
 }
-document.querySelectorAll(".key").forEach(k => {
-  k.addEventListener("pointerdown", e => { e.preventDefault(); k.setPointerCapture(e.pointerId); pointers.set(e.pointerId, k.dataset.dir); recompute(); });
-  const up = e => { pointers.delete(e.pointerId); recompute(); };
-  ["pointerup", "pointercancel", "lostpointercapture"].forEach(t => k.addEventListener(t, up));
-});
-function releaseAll() { calStop(); pointers.clear(); keys.clear(); recompute(); post("/stop", {}); }
+function releaseAll() { hardStop = true; calStop(); releaseStick(); keys.clear(); held.clear(); post("/stop", {}); }
 $("stop").addEventListener("pointerdown", e => { e.preventDefault(); releaseAll(); });
 $("reset").addEventListener("click", () => post("/reset", {}));
 $("horn").addEventListener("pointerdown", e => { e.preventDefault(); post("/horn", {}); });
@@ -307,7 +351,7 @@ const keys = new Set();
 const KEYMAP = { ArrowUp: "up", w: "up", ArrowDown: "down", s: "down", ArrowLeft: "left", a: "left", ArrowRight: "right", d: "right" };
 addEventListener("keydown", e => {
   if (setupOpen) return;   // the Setup screen is open: keys don't drive
-  if (KEYMAP[e.key]) { e.preventDefault(); keys.add(KEYMAP[e.key]); recompute(); }
+  if (KEYMAP[e.key]) { e.preventDefault(); hardStop = false; keys.add(KEYMAP[e.key]); recompute(); }
   else if (e.key === " ") releaseAll();
   else if (e.key === "h" && !e.repeat) post("/horn", {});
   else if ("1234".includes(e.key) && e.key && window._modes) setMode(window._modes[+e.key - 1].name);
@@ -323,11 +367,16 @@ async function post(path, body) {
     show(await r.json());
   } catch (e) { fail(); }
 }
+function driveBody() { return stick ? { stick, mode } : { held: [...held], mode }; }
 async function send(force) {
   if (inFlight && !force) return;
-  inFlight = true;
-  await post("/drive", { held: [...held], mode });
+  inFlight = true; lastSent = performance.now();
+  const body = driveBody();
+  await post("/drive", body);
   inFlight = false;
+  // Let go (or STOP) while that move was on its way: stop again, so the stop lands after the
+  // move even if the PC handled them out of order and the move started the robot again.
+  if (!driving() && (body.stick || body.held.length)) hardStop ? post("/stop", {}) : send(true);
 }
 async function poll() {
   const t0 = performance.now();
@@ -339,7 +388,7 @@ async function poll() {
 }
 setInterval(() => {
   if (calArrow) post("/cal/test", { arrow: calArrow });   // heartbeat for a calibration test
-  else if (held.size) send(false);                  // heartbeat: keeps the robot moving while held
+  else if (driving() && performance.now() - lastSent >= SEND_GAP_MS) send(false);   // heartbeat: keeps it moving
   else if (performance.now() - lastState > 300) { lastState = performance.now(); poll(); }
 }, 100);
 
@@ -356,7 +405,7 @@ function show(s) {
   last = s;
   if (setupOpen) paintSetup();
   if (!built && s.modes) { maxCm = s.max_cm || maxCm; buildSpeedo(); buildGears(s.modes); window._modes = s.modes; built = true; }
-  if (s.mode && s.mode !== mode && !held.size) { mode = s.mode; paintGears(); }
+  if (s.mode && s.mode !== mode && !driving()) { mode = s.mode; paintGears(); }
   const ok = s.connected;
   $("overlay").classList.toggle("show", !ok);
   if (!ok) { $("ovTitle").textContent = "Waiting for the robot"; $("ovText").textContent = s.status || "Connecting to the brick…"; }
@@ -417,12 +466,17 @@ function el(tag, cls, text) {
   return e;
 }
 
-function buildSetup() {
-  const su = last.setup;
+let portIds = null;
+function buildPorts(su) {   // again whenever the brick's motors change (cables moved)
+  portIds = su.ports.map(p => p.id).join();
   for (const id of ["selLeft", "selRight"]) {
     const sel = $(id); sel.innerHTML = "";
     for (const p of su.ports) { const o = el("option", "", p.name); o.value = p.id; sel.append(o); }
   }
+}
+function buildSetup() {
+  const su = last.setup;
+  buildPorts(su);
   const rows = $("calRows"); rows.innerHTML = "";
   for (const [arrow, sym] of CAL_ARROWS) {
     const row = el("div", "calrow"), test = el("button", "test", "Test"), answers = el("div", "answers");
@@ -456,6 +510,7 @@ function paintSetup() {
   const su = last.setup; if (!su) return;
   $("setupWarn").textContent = !last.connected ? "Not connected to the brick yet." :
     su.left === su.right ? "Pick two different motors." : (last.warning || "");
+  if (su.ports.map(p => p.id).join() !== portIds) buildPorts(su);
   if (document.activeElement !== $("selLeft")) $("selLeft").value = su.left;
   if (document.activeElement !== $("selRight")) $("selRight").value = su.right;
   $("invLeft").classList.toggle("on", su.invert_left);

@@ -10,7 +10,7 @@ are hand-drawn `tkinter`. No build step.
 | File | What it is |
 |---|---|
 | `ev3_drive.pyw` | **EV3 RC**: drive a two-motor robot from the keyboard like an RC car, with a live dashboard (speedometer, wheel meters, trip, battery, latency) and a calibration card. Holds all the shared drive logic. |
-| `ev3_phone.py` + `ev3_phone.html` | Phone controller: a small HTTP server on the PC serving a touch page, with a Setup · Calibrate screen mirroring the desktop's Setup card (`/setup` saves motors/Invert/trim/accel; `/cal/test` runs a `CAL_PATTERNS` test while the phone keeps re-sending it, stopped by `PHONE_TIMEOUT`; `/cal/save` applies `cal_result()`). Each run `start_server()` opens it on a random free port in `PORT_RANGE` (8000–8999), or on `--port N` (`take_port_arg()` removes that before `ev3_config` reads the brick address). `Server.allow_reuse_address` is off on Windows, where it would let two copies share a port. **Imports `ev3_drive.pyw`** (`SourceFileLoader`) and reuses its `Brick`, `wheel_commands`, `send_drive`, constants and settings. |
+| `ev3_phone.py` + `ev3_phone.html` | Phone controller: a small HTTP server on the PC serving a touch page (a joystick with STOP and HORN under it, gears), with a Setup · Calibrate screen mirroring the desktop's Setup card (`/setup` saves motors/Invert/trim/accel; `/cal/test` runs a `CAL_PATTERNS` test while the phone keeps re-sending it, stopped by `PHONE_TIMEOUT`; `/cal/save` applies `cal_result()`). `/drive` takes `{"stick": [x, y], "mode": …}` from the joystick (x right, y forward, -1..1; re-sent every ~100 ms while touched) or `{"held": [...], "mode": …}` from a desktop browser's arrow keys; `parse_stick()` rejects non-numbers/NaN/Infinity and clamps, stick wins over held, and `stop()`/`cal_test()` clear it. `_check_ports()` (in `_monitor` after each `read_motors`, keyed on `known_ports`) picks the motor pair like the desktop when the brick's motors change: `pick_motors()` on the saved ports and, if that differs, `_save({"left", "right"})` (stops first), so both apps agree; `rc.MotorsChanged` → `brick.drop()` + `continue` (reconnects at once: no "Brick disconnected" status or 2 s wait, the phone keeps its last telemetry meanwhile); the page's Setup sheet rebuilds its motor `<select>`s when `setup.ports` changes (`buildPorts`/`portIds`). Each run `start_server()` opens it on a random free port in `PORT_RANGE` (8000–8999), or on `--port N` (`take_port_arg()` removes that before `ev3_config` reads the brick address). `Server.allow_reuse_address` is off on Windows, where it would let two copies share a port. **Imports `ev3_drive.pyw`** (`SourceFileLoader`) and reuses its `Brick`, `wheel_commands`, `stick_commands`, `send_drive`, constants and settings. |
 | `ev3_widget.pyw` | **EV3 Status** widget: always-on-top window showing battery, CPU/RAM, ports, motors, sensors; jog motors, switch sensor modes, free memory (sudo), stop the running program; Sound card (play built-in/uploaded WAVs, text-to-speech, volume, upload). Independent of the other files. |
 | `ev3_sound.py` | Sound commands, sound-list query/parsing and WAV upload, shared by the drive app and the widget (each builds its own Sound card UI). |
 | `ev3_config.py` | Loads `ev3_config.json` (brick address + SSH login) for all three apps. Each laptop has its own (git-ignored) and drives its own brick: `python ev3_config.py <name or IP>` saves the host (`brick_address()` adds `.local` to bare names; `save_host()` keeps the login). Every SSH connect goes through `ssh_address(host)`: the brick's first IPv4 address, because Windows can list a `.local` name's IPv6 link-local address first, ev3dev's SSH doesn't answer there, and paramiko gives up after that one timeout. |
@@ -19,9 +19,9 @@ are hand-drawn `tkinter`. No build step.
 | `programs/<name>/` | EV3 MicroPython programs that run on the brick (VS Code LEGO EV3 MicroPython extension projects: `main.py` with a `pybricks-micropython` shebang, `.vscode/launch.json` for "Download and Run"). Their `.vscode` folders are committed (`.gitignore` exception). Not run on the PC; not covered by the tests. |
 | `ev3_setup.py` | Copies the EV3 program folders in `programs/` (`programs/<name>/main.py`) to `/home/<user>/<name>` on a brick over SFTP, like "Download and Run" (skips dotfiles/caches, `chmod 755` on `#!` scripts), then prints read-only brick facts. Used to make several bricks identical. Never deletes on the brick, never moves motors. `take_args()` strips `--dry-run` / `--programs DIR` before `ev3_config` reads the address. |
 | `tests/test_drive.py` | Offline tests for the drive logic (fake brick, fake clock). |
+| `tests/test_phone.py` | Offline tests for `ev3_phone.py` (`Controller`, `parse_stick`; fake brick). |
 | `tests/test_setup.py` | Offline tests for `ev3_setup.py` (temp program folders, fake SFTP). |
-| `ev3_drive_settings.json` | Created at runtime, git-ignored. Motor ports, per-wheel invert, drift trim, last gear. Written by the desktop app and by the phone's Setup screen (`/setup`, `/cal/save`), and read by both;
-the phone also writes `mode`. Keys: `left`, `right`, `invert_left`, `invert_right`, `trim`, `mode`, `accel`. |
+| `ev3_drive_settings.json` | Created at runtime, git-ignored. Motor ports, per-wheel invert, drift trim, last gear. Written by the desktop app and by the phone's Setup screen (`/setup`, `/cal/save`), and read by both; the phone also writes `mode`, and `left`/`right` when `_check_ports()` auto-picks the pair. Keys: `left`, `right`, `invert_left`, `invert_right`, `trim`, `mode`, `accel`. |
 
 `.pyw` = Python run without a console on Windows. Run with `python` (not `pythonw`) to see tracebacks.
 
@@ -45,8 +45,13 @@ Never hard-code an address or password in the apps.
 
 Pipeline, called every `RENEW_MS` (120 ms) while a key is held, and immediately on any key change:
 
-1. `wheel_commands(held, mode, trim)` → target wheel speeds in deg/s, **wheel space** (+ = forward,
-   before Invert). Curves slow the inner wheel to `TURN_INNER`; left/right alone spins in place.
+1. `wheel_commands(held, mode, trim)` = `drift_fix(*arrow_speeds(held, mode), trim)` → target wheel
+   speeds in deg/s, **wheel space** (+ = forward, before Invert). Curves slow the inner wheel to
+   `TURN_INNER`; left/right alone spins in place. The phone's joystick goes through
+   `stick_commands(x, y, mode, trim)` instead (x right, y forward, -1..1): nothing inside
+   `STICK_DEADZONE`, speed ∝ push beyond it, direction a linear blend of the two nearest of the
+   arrows' eight moves (`STICK_MOVES`), so the eight arrow directions drive exactly like the keys
+   and nothing jumps around the circle. Both feed the same `send_drive`.
 2. `send_drive(brick, lp, rp, left, right, mode, invert_left, invert_right, ramp)`:
    - `Brick.ramp()` moves from the last levels toward the targets. **Overall speed** (average of the
      wheels) changes over `ramp` seconds, the saved Acceleration setting (`ACCELERATIONS`, key `accel`,
@@ -67,6 +72,15 @@ Pipeline, called every `RENEW_MS` (120 ms) while a key is held, and immediately 
 `echo … > /sys/class/tacho-motor/motorN/…` per call, never waits for output) and `mon` (readback via
 a `mon` shell function, every `MONITOR_SECONDS`). `watchdog_script()` starts a background loop on the
 brick that stops all motors if the Turbo heartbeat goes stale for `WATCHDOG_CS` or the SSH session dies.
+`read_motors()` raises `MotorsChanged` (a `ConnectionError`) when the brick's motor set no longer
+matches `paths` (a cable moved). Both apps' `_monitor` answer it with `Brick.drop()` + `continue`:
+the client is closed without a stop command (its shells and watchdog end with it on the brick, and
+the watchdog still stops a Turbo run) and `client`/`ctl`/`mon`/`mon_out` are cleared, so the next
+pass `connect()`s at once with a watchdog for the new motors, instead of the 2 s disconnected pause
+that used to leave the old shells running. The pair is then re-picked with
+`pick_motors(left, right, ports)`: the saved picks when the brick has them, otherwise motors it does
+have, with fewer than two motors left alone (desktop `_fill_port_menus`, called from `_refresh_ui`
+when `paths` differ from `known_ports`; phone `_check_ports()`); both save the result.
 
 **Calibrate…** (`CalibrateWindow`): each arrow runs the picked motors in a fixed raw pattern and the
 user clicks what the robot did. `cal_result()` turns the answers into swap + invert_left/right, so
@@ -98,10 +112,13 @@ key handlers, so typing never drives the robot.
 - **Do not move the real robot on your own.** It may be on a desk. Read-only SSH checks (listing
   motors, battery) are fine; ask the user before sending anything that turns a motor, and let them
   do the driving tests.
-- `ev3_phone.py` depends on `ev3_drive.pyw`'s names and signatures (`Brick`, `wheel_commands`,
-  `send_drive`, `load_settings`/`save_settings`, `MODES`, `SETTINGS_FILE`, `DEFAULT_LEFT/RIGHT`,
-  `BATTERY_RANGE`, `AA_RANGE`, `MAX_SPEED`, `MOTOR_LIMIT`, `MONITOR_SECONDS`, `deg_to_cm`, `HOST`).
-  Change both files together, and keep the phone driving exactly like the desktop.
+- `ev3_phone.py` depends on `ev3_drive.pyw`'s names and signatures (`Brick`, `MotorsChanged`,
+  `wheel_commands`, `stick_commands`, `send_drive`, `ramp_seconds`, `pick_motors`, `port_name`,
+  `cal_result`/`cal_predict`, `load_settings`/`save_settings`, `MODES`, `ACCELERATIONS`,
+  `DEFAULT_ACCEL`, `CAL_PATTERNS`, `TEST_SPEED`, `TEST_MS`, `TRIM_RANGE`, `SETTINGS_FILE`,
+  `DEFAULT_LEFT/RIGHT`, `BATTERY_RANGE`, `AA_RANGE`, `MAX_SPEED`, `MOTOR_LIMIT`, `MONITOR_SECONDS`,
+  `deg_to_cm`, `HOST`). Change both files together, and keep the phone driving exactly like the
+  desktop (the joystick's eight arrow directions must equal the arrow keys' moves).
 - Keep the settings JSON keys backward compatible (`reverse` is an older single-invert key still read).
 - The brick's CPU is slow. Anything that polls it uses shell builtins only (`read`, `echo`, `case`),
   runs `renice -n 19`, and avoids starting processes per poll.
@@ -120,8 +137,9 @@ key handlers, so typing never drives the robot.
   Keep new UI inside a foldable card, and check the height after adding anything.
 - The widget is borderless (`overrideredirect`) on Windows only; elsewhere that would block
   keyboard focus. A missing `paramiko` shows a message box, since `.pyw` files have no console.
-- Tests or scripts that create `DriveApp` save `ev3_drive_settings.json` (the user's real
-  calibration). Patch `save_settings` too, or back the file up first.
+- Tests or scripts that create `DriveApp` or the phone's `Controller` save `ev3_drive_settings.json`
+  (the user's real calibration). Patch `save_settings` (and `Controller._reload_settings`, as
+  `tests/test_phone.py` does), or back the file up first.
 - Key releases in `ev3_drive.pyw` are delayed by `KEY_RELEASE_MS` and cancelled by an immediate
   press: macOS/Linux Tk auto-repeat sends release+press pairs, which would otherwise brake and
   restart the ramp many times a second. Windows only repeats presses.

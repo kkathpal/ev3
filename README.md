@@ -5,7 +5,8 @@ computer or phone, over the same SSH connection the VS Code EV3 extension uses.
 
 - **EV3 RC** (`ev3_drive.pyw`): drive a two-motor robot with the arrow keys / WASD, with a live
   speedometer, trip meter and battery.
-- **Phone controller** (`ev3_phone.py`): the same driving from any phone on your Wi-Fi.
+- **Phone controller** (`ev3_phone.py`): the same driving from any phone on your Wi-Fi, with a
+  touch joystick.
 - **EV3 Status** (`ev3_widget.pyw`): a small always-on-top window with the brick's battery, CPU,
   memory, ports, motors and sensors.
 
@@ -90,6 +91,12 @@ in its `/etc/hosts`, then reboot), run `python ev3_config.py mycar` (or set
 | P | play the sound picked in the Sound card |
 | Space | stop hard |
 
+On the phone, drive with the joystick: push it in any direction to go. How far you push sets the
+speed, up to the selected gear's top speed at the rim; the direction steers: straight up is
+forward, sideways spins in place, a diagonal curves like ↑ + →, and every angle in between curves
+smoothly. Let go to stop. **STOP** and **HORN** sit under it, and the gears still set the top
+speed. If you open the phone page in a desktop browser, the arrow keys work there too.
+
 First time with a robot: in the **Setup** card press **Calibrate…**. Hold each arrow key (or its
 **Test** button); the robot moves slowly while you hold it. Click what it actually did (Forward,
 Backward, Left or Right) and **Save**: it works out **Swap** and **Invert** for you. You can also
@@ -154,10 +161,17 @@ them all be reachable at once.
 - **"Authentication failed"** – the brick's password isn't `maker`; fix it in `ev3_config.json`.
 - **The robot drives the wrong way or curves** – use the Setup card (Calibrate…, or Test, Invert,
   Swap, Drift fix).
+- **The robot doesn't move but the horn works** (say, after moving the motor cables to other
+  sockets) – EV3 RC and the phone controller switch to the motors that are plugged in by
+  themselves. Check which at the top of the phone page (`L = Motor B · R = Motor C`) or in
+  Setup, and pick them there if they're wrong.
+- **Phone: a code update doesn't show** – restart the server (Ctrl+C, then `python ev3_phone.py`
+  again): reloading the page only picks up changes to the page itself, not to the Python files.
+  Run just one copy of `ev3_phone.py` per laptop, since each copy connects to the brick.
 - **Phone: "Can't use port …"** – something else (maybe another copy) is using the port you gave
   with `--port`; close it, pick another, or leave out `--port` to get a random free one.
 
 ## Tests
 
-`python -m unittest discover -s tests -v` checks the driving logic and the brick setup script
-without a robot.
+`python -m unittest discover -s tests -v` checks the driving logic, the phone controller and the
+brick setup script without a robot.
