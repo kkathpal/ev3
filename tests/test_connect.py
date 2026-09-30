@@ -1,95 +1,107 @@
-"""Offline tests for choosing the brick from the phone (Connection screen): switching address,
-and finding bricks on the PC's networks. No robot, no SSH, no web server.
+"""Offline tests for choosing the brick from the phone (Connection screen): each phone picks its
+own brick, and finding bricks on the PC's networks. No robot, no SSH, no web server.
 
 Run from the project folder:   python -m unittest discover -s tests -v
 """
 import os
 import sys
+import tempfile
 import types
 import unittest
 from unittest import mock
 
 sys.modules.setdefault("paramiko", types.ModuleType("paramiko"))   # not needed offline
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_phone import ControllerTest, FakeBrick, phone, rc   # noqa: E402  (same fixtures)
+from test_phone import FakeBrick, phone, rc, speeds   # noqa: E402  (same fixtures)
 import ev3_find   # noqa: E402
 
 
-class SwitchingBrick(FakeBrick):
-    """Records close/connect, and which address each connect() was made to."""
+class HubTest(unittest.TestCase):
+    """Each phone picks its own brick; phones on the same brick share it."""
 
-    def __init__(self, log):
-        super().__init__()
-        self.log = log
-
-    def close(self):
-        self.log.append("close")
-        self.ctl = None
-
-    def connect(self):
-        self.log.append(f"connect {rc.HOST}")
-        self.ctl = types.SimpleNamespace(closed=False)
-
-    def read_motors(self):
-        return {port: (0, 0) for port in self.paths}
-
-
-class Enough(Exception):
-    """Out of _monitor's forever loop."""
-
-
-class ConnectTest(ControllerTest):
     def setUp(self):
-        super().setUp()
-        patcher = mock.patch.object(rc, "HOST", "ev3kk.local")   # connect_to changes it: restore after
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        self.controller.brick_host = rc.HOST
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.saved_hosts = []
+        for patcher in (mock.patch.object(phone.threading, "Thread"),              # no brick threads
+                        mock.patch.object(rc, "HOST", "ev3kk.local"),              # this PC's brick
+                        mock.patch.object(rc, "SETTINGS_FILE", os.path.join(tmp.name, "settings.json")),
+                        mock.patch.object(rc.ev3_config, "save_host", self.saved_hosts.append),
+                        mock.patch.object(rc.ev3_config, "saved_host", return_value="ev3kk.local")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.hub = phone.Hub()
 
-    def test_address_becomes_host_and_driving_stops(self):
-        self.drive(held={"up"})
-        self.assertEqual(self.controller.connect_to(" ev3kishan "), "")
-        self.assertEqual(rc.HOST, "ev3kishan.local")   # a bare name gets .local
-        self.assertIn("stop > L/command", self.brick.sent[-1])
-        self.assertFalse(self.controller.telemetry["connected"])
-        self.assertEqual(self.controller.connect_to("192.168.4.57"), "")
-        self.assertEqual(rc.HOST, "192.168.4.57")        # an IP stays as it is
+    def test_each_phone_drives_its_own_brick(self):
+        self.assertEqual(self.hub.select("A", "ev3kishan"), "")
+        self.assertEqual(self.hub.select("B", "192.168.4.46"), "")
+        a, b = self.hub.controller("A"), self.hub.controller("B")
+        self.assertEqual((a.host, b.host), ("ev3kishan.local", "192.168.4.46"))
+        self.assertIsNot(a, b)
+        self.assertEqual(self.hub.controller("C").host, "ev3kk.local")   # a new phone: this PC's brick
+
+    def test_picking_a_brick_leaves_other_phones_alone(self):
+        self.hub.controller("A"), self.hub.controller("B")   # both start on this PC's brick
+        self.hub.select("A", "192.168.4.46")
+        self.assertEqual(self.hub.controller("B").host, "ev3kk.local")
+        self.assertEqual(self.hub.state("B")["connection"]["host"], "ev3kk.local")
+        self.assertEqual(self.hub.state("A")["connection"]["host"], "192.168.4.46")
 
     def test_bad_addresses_are_refused(self):
         for bad in ("", "   ", "ev3 kishan", "rm -rf /", "a;b", None, 42):
-            self.assertTrue(self.controller.connect_to(bad), bad)
-        self.assertEqual(rc.HOST, "ev3kk.local")
+            self.assertTrue(self.hub.select("A", bad), bad)
+        self.assertEqual(self.hub.controller("A").host, "ev3kk.local")
 
-    def test_remember_saves_this_pcs_brick(self):
-        with mock.patch.object(rc.ev3_config, "save_host") as save:
-            self.controller.connect_to("192.168.4.57")
-            save.assert_not_called()
-            self.controller.connect_to("192.168.4.57", remember=True)
-            save.assert_called_once_with("192.168.4.57")
+    def test_remember_changes_where_new_phones_start(self):
+        self.hub.select("A", "192.168.4.46")
+        self.assertEqual(self.saved_hosts, [])
+        self.hub.select("A", "ev3kishan", remember=True)
+        self.assertEqual(self.saved_hosts, ["ev3kishan.local"])
+        self.assertEqual(self.hub.controller("new phone").host, "ev3kishan.local")
 
-    def test_monitor_lets_the_old_brick_go_and_connects_the_new_one(self):
-        log = []
-        self.controller.brick = SwitchingBrick(log)
-        self.controller.connect_to("192.168.4.57")
-        rounds = []
+    def test_moving_on_stops_what_this_phone_was_driving(self):
+        home = self.hub.controller("A")
+        home.brick = FakeBrick()
+        home.drive(["up"], client="A")
+        self.hub.select("A", "192.168.4.46")
+        self.assertIsNone(speeds(home.brick.sent[-1]))   # the last command was a stop
 
-        def sleep(seconds):
-            rounds.append(seconds)
-            if len(rounds) == 2:
-                raise Enough
+    def test_unused_bricks_are_let_go(self):
+        self.hub.controller("A")                         # the page opens on this PC's brick
+        self.hub.select("A", "192.168.4.46")
+        self.hub.select("B", "192.168.4.46")
+        wifi = self.hub.controllers["192.168.4.46"]
+        with mock.patch.object(wifi, "shutdown") as shutdown:
+            self.hub.select("A", "ev3kishan")            # B still on it: kept
+            shutdown.assert_not_called()
+            self.hub.select("B", "ev3kishan")            # nobody left: stopped and let go
+            shutdown.assert_called_once()
+        self.assertNotIn("192.168.4.46", self.hub.controllers)
+        kishan = self.hub.controllers["ev3kishan.local"]
+        with mock.patch.object(kishan, "shutdown") as shutdown, self.hub.lock:
+            self.hub._release_unused(now=phone.time.monotonic() + phone.REAP_AFTER + 1)   # phones gone
+            shutdown.assert_called_once()
+        self.assertEqual(list(self.hub.controllers), ["ev3kk.local"])   # this PC's brick is kept
 
-        with mock.patch.object(phone.time, "sleep", sleep), self.assertRaises(Enough):
-            self.controller._monitor()
-        self.assertEqual(log, ["close", "connect 192.168.4.57"])   # old one stopped first, then the new
-        self.assertEqual(self.controller.brick_host, "192.168.4.57")
-        self.assertEqual(self.controller.status, "Connected")
+    def test_each_brick_keeps_its_own_settings(self):
+        rc.save_settings({"left": "outA", "right": "outD", "invert_left": True, "mode": "Normal"})
+        home, other = phone.Controller("ev3kk.local"), phone.Controller("192.168.4.46")
+        other.brick.name = "ev3krutin"
+        with other.lock:
+            other._save({"left": "outB", "right": "outC", "invert_left": False})
+        with home.lock:
+            home._save({"trim": 5})
+        file = rc.load_settings()
+        self.assertEqual((file["left"], file["right"], file["trim"]), ("outA", "outD", 5))   # this PC's brick
+        self.assertEqual(file["bricks"]["ev3krutin"], {"left": "outB", "right": "outC", "invert_left": False})
+        other._reload_settings()
+        self.assertEqual((other.settings["left"], other.settings["mode"]), ("outB", "Normal"))   # own + PC's rest
+        rc.save_settings({"left": "outA", "right": "outD"})   # the desktop app saving its settings
+        self.assertIn("ev3krutin", rc.load_settings()["bricks"])   # doesn't wipe other bricks'
 
-    def test_connection_state_for_the_page(self):
-        self.brick.name = "ev3kk"
-        self.controller.status = "Connected"
-        with mock.patch.object(rc.ev3_config, "saved_host", return_value="ev3kk.local"):
-            c = self.controller.state()["connection"]
-        self.assertEqual((c["host"], c["name"], c["saved"]), ("ev3kk.local", "ev3kk", "ev3kk.local"))
+    def test_state_has_the_search_and_the_saved_brick(self):
+        c = self.hub.state("A")["connection"]
+        self.assertEqual((c["host"], c["saved"]), ("ev3kk.local", "ev3kk.local"))
         self.assertFalse(c["scan"]["running"])
 
 
@@ -158,23 +170,23 @@ class FindBricksTest(unittest.TestCase):
                 self.assertEqual(ev3_find.identify("192.168.4.57", "robot", "maker"), expected, kind)
 
     def test_scan_lists_paired_bricks_without_a_network(self):
-        with mock.patch.object(phone.threading, "Thread"):
-            controller = phone.Controller()
+        search = ev3_find.BrickSearch(("robot", "maker"))
         found = [{"ip": "192.168.4.46", "name": "ev3krutin", "via": "Wi-Fi"}]
-        with mock.patch.object(ev3_find, "find_bricks", return_value=found),              mock.patch.object(ev3_find, "paired_bluetooth_bricks", return_value=["ev3kk", "ev3krutin"]):
-            controller.search.run()
-        self.assertEqual(controller.search.state, {"running": False, "found": found, "paired": ["ev3kk"], "error": ""})
+        with mock.patch.object(ev3_find, "find_bricks", return_value=found), \
+             mock.patch.object(ev3_find, "paired_bluetooth_bricks", return_value=["ev3kk", "ev3krutin"]):
+            search.run()
+        self.assertEqual(search.state, {"running": False, "found": found, "paired": ["ev3kk"], "error": ""})
 
     def test_scan_runs_in_the_background_once(self):
-        with mock.patch.object(phone.threading, "Thread"):
-            controller = phone.Controller()
+        search = ev3_find.BrickSearch(("robot", "maker"))
         with mock.patch.object(ev3_find.threading, "Thread") as thread:
-            controller.start_scan()
-            controller.start_scan()   # already running: not started twice
+            self.assertTrue(search.start())
+            self.assertFalse(search.start())   # already running: not started twice
         self.assertEqual(thread.call_count, 1)
-        with mock.patch.object(ev3_find, "find_bricks", return_value=[]),              mock.patch.object(ev3_find, "paired_bluetooth_bricks", return_value=[]):
-            controller.search.run()
-        state = controller.search.state
+        with mock.patch.object(ev3_find, "find_bricks", return_value=[]), \
+             mock.patch.object(ev3_find, "paired_bluetooth_bricks", return_value=[]):
+            search.run()
+        state = search.state
         self.assertEqual((state["running"], state["found"], state["paired"]), (False, [], []))
         self.assertTrue(state["error"].startswith("No bricks found."), state["error"])
 

@@ -189,6 +189,7 @@ class Brick:
         self.last_horn = -HORN_GAP
         self.name = None         # the brick's hostname, read when connecting
         self.address = None      # the IP the connection was made to
+        self.host = None         # this brick's address; None = the app's HOST
         self.lock = threading.Lock()
 
     @property
@@ -198,7 +199,7 @@ class Brick:
     def connect(self):
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        address = ev3_config.ssh_address(HOST)
+        address = ev3_config.ssh_address(self.host or HOST)   # the phone server gives each brick its own
         client.connect(address, username=USER, password=PASSWORD, timeout=8,
                        look_for_keys=False, allow_agent=False)
         transport = client.get_transport()
@@ -521,6 +522,12 @@ def load_settings():
 
 
 def save_settings(settings):
+    """Write the settings file. Other bricks' settings (the "bricks" section, written by the
+    phone controller when phones drive other bricks) are kept unless `settings` has its own."""
+    if "bricks" not in settings:
+        bricks = load_settings().get("bricks")
+        if bricks:
+            settings = {**settings, "bricks": bricks}
     try:
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(settings, f)
