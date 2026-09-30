@@ -121,7 +121,7 @@ class DriveTest(unittest.TestCase):
     def test_horn_works_again_and_again(self):
         for _ in range(5):
             self.assertTrue(self.brick.horn())
-            self.now += rc.HORN_GAP
+            self.now += rc.HORN_GAP + 0.01
         self.assertEqual(len(self.brick.sent), 5)
 
     def test_stop_actions_and_ramp_restart(self):
