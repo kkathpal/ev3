@@ -11,6 +11,7 @@ still wins, for a one-off:   python ev3_drive.pyw 192.168.0.1
 """
 import json
 import os
+import re
 import socket
 import sys
 
@@ -65,6 +66,15 @@ def brick_address(name):
     ev3dev bricks are found on the network); IPs and full names stay as they are."""
     name = name.strip()
     return name if "." in name or ":" in name else f"{name}.local"
+
+
+def parse_address(text):
+    """A brick address as typed ("ev3kishan", " 192.168.1.23 ") → the host to connect to
+    ("ev3kishan.local", "192.168.1.23"), or None if it can't be one (spaces, symbols...)."""
+    text = text.strip() if isinstance(text, str) else ""
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,253}", text):
+        return None
+    return brick_address(text)
 
 
 def save_host(host):

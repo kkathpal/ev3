@@ -56,6 +56,7 @@ except ImportError:   # a double-clicked .pyw has no console, so say it in a win
     sys.exit(1)
 
 import ev3_config
+import ev3_find
 import ev3_sound
 
 CONFIG = ev3_config.load()
@@ -848,6 +849,140 @@ class CalibrateWindow(tk.Toplevel):
         self.app.focus_set()
 
 
+class ConnectWindow(tk.Toplevel):
+    """Pick the brick: opens on every start, and from the header's Brick… button. Finds bricks
+    over Bluetooth/USB and Wi-Fi (ev3_find, never logging in), or takes a name or IP address.
+    Picking one makes the monitor stop the current brick's motors, let it go and connect."""
+
+    def __init__(self, app):
+        super().__init__(app, bg=BG, padx=px(14), pady=px(12))
+        self.app = app
+        self.title("Connect to the brick")
+        self.resizable(False, False)
+        self.transient(app)
+        self.attributes("-topmost", True)   # the app is topmost; stay above it
+        self.results_key = None
+        self.refresh_id = None
+        wrap = px(390)
+
+        tk.Label(self, text="CONNECT TO THE BRICK", bg=BG, fg=MUTED, font=FONT_CAPS).pack(anchor="w")
+        self.status = tk.Label(self, text="", bg=BG, fg=MUTED, font=FONT, justify="left", anchor="w",
+                               wraplength=wrap)
+        self.status.pack(fill="x", pady=(px(4), px(8)))
+
+        box = tk.Frame(self, bg=CARD, padx=px(10), pady=px(8))
+        box.pack(fill="x")
+        tk.Label(box, text="BRICK ADDRESS", bg=CARD, fg=MUTED, font=FONT_CAPS).pack(anchor="w")
+        tk.Label(box, text="Its name (like ev3kishan) or its IP address: the brick's screen shows its IP at the top.",
+                 bg=CARD, fg=DIM, font=FONT_SMALL, justify="left", wraplength=wrap).pack(anchor="w", pady=(px(2), px(6)))
+        row = tk.Frame(box, bg=CARD)
+        row.pack(fill="x")
+        self.address = tk.StringVar(value=HOST[:-6] if HOST.endswith(".local") else HOST)
+        entry = tk.Entry(row, textvariable=self.address, bg=TILE, fg=FG, insertbackground=FG, relief="flat",
+                         highlightthickness=0, font=FONT)
+        entry.pack(side="left", fill="x", expand=True, ipady=px(4))
+        entry.bind("<Return>", lambda e: self._connect())
+        Pill(row, "Connect", self._connect, bg=blend(ACCENT, CARD, 0.6), font=FONT_SMALL, pady=px(4)).pack(
+            side="left", padx=(px(6), 0))
+        self.remember = tk.BooleanVar(value=True)
+        tk.Checkbutton(box, text="Remember on this PC (the phone controller uses it too)", variable=self.remember,
+                       bg=CARD, fg=FG, selectcolor=TILE, activebackground=CARD, activeforeground=FG,
+                       font=FONT_SMALL, takefocus=False).pack(anchor="w", pady=(px(6), 0))
+        self.msg = tk.Label(box, text="", bg=CARD, fg=MUTED, font=FONT_SMALL, anchor="w", justify="left",
+                            wraplength=wrap)
+        self.msg.pack(fill="x")
+
+        box = tk.Frame(self, bg=CARD, padx=px(10), pady=px(8))
+        box.pack(fill="x", pady=(px(8), 0))
+        head = tk.Frame(box, bg=CARD)
+        head.pack(fill="x")
+        tk.Label(head, text="FIND BRICKS · BLUETOOTH AND WI-FI", bg=CARD, fg=MUTED, font=FONT_CAPS).pack(side="left")
+        self.search_button = Pill(head, "Search again", self._search, font=FONT_SMALL, padx=px(8), pady=px(2))
+        self.search_button.pack(side="right")
+        tk.Label(box, text="Bricks linked to this PC over Bluetooth or USB, then bricks on the same Wi-Fi (the "
+                           "brick needs a USB Wi-Fi dongle). Click one to connect.",
+                 bg=CARD, fg=DIM, font=FONT_SMALL, justify="left", wraplength=wrap).pack(anchor="w", pady=(px(4), px(6)))
+        self.search_msg = tk.Label(box, text="", bg=CARD, fg=MUTED, font=FONT_SMALL, anchor="w", justify="left",
+                                   wraplength=wrap)
+        self.search_msg.pack(fill="x")
+        self.results = tk.Frame(box, bg=CARD)
+        self.results.pack(fill="x", pady=(px(4), 0))
+
+        buttons = tk.Frame(self, bg=BG)
+        buttons.pack(fill="x", pady=(px(10), 0))
+        Pill(buttons, "Done", self.close, bg=blend(GOOD, CARD, 0.6)).pack(side="right")
+
+        self.bind("<Escape>", lambda e: self.close())
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.update_idletasks()   # open over the app's dashboard
+        x = app.winfo_rootx() + (app.winfo_width() - self.winfo_reqwidth()) // 2
+        self.geometry(f"+{max(0, x)}+{app.winfo_rooty() + px(40)}")
+        app._dark_title_bar(self)
+        self.focus_force()
+        self._search()
+
+    def _search(self):
+        self.app.search.start()   # does nothing if one is already running
+        self._refresh()
+
+    def _connect(self, address=None):
+        if address:
+            self.address.set(address)
+        error = self.app._connect_to(self.address.get(), self.remember.get())
+        self.msg.configure(text=error or f"Connecting to {HOST}… (up to 10 seconds)", fg=BAD if error else MUTED)
+
+    def _refresh(self):
+        """Show the connection and the search as they change (every 300 ms while open)."""
+        if self.refresh_id is not None:
+            self.after_cancel(self.refresh_id)
+        text, color = self.app.status
+        if color == GOOD:
+            name = self.app.brick.name
+            text = (f"✓ Connected to {HOST}" + (f" ({name})" if name and f"{name}.local" != HOST else "")
+                    + ". Click Done to drive, or pick another brick.")
+        self.status.configure(text=text, fg=color)
+        state = self.app.search.state
+        self.search_button.configure(text="Searching…" if state["running"] else "Search again")
+        self.search_msg.configure(text="Searching Bluetooth/USB first, then Wi-Fi (a few seconds)…"
+                                  if state["running"] else state.get("error", ""))
+        key = (tuple((f["ip"], f["name"], f["via"]) for f in state["found"]), tuple(state.get("paired", [])))
+        if key != self.results_key:   # rebuild only when the results change
+            self.results_key = key
+            self._show_results(state["found"], state.get("paired", []))
+        self.refresh_id = self.after(300, self._refresh)
+
+    def _show_results(self, found, paired):
+        for w in self.results.winfo_children():
+            w.destroy()
+        for f in found:
+            bt = f["via"] != "Wi-Fi"
+            row = tk.Frame(self.results, bg=TILE, cursor="hand2")
+            row.pack(fill="x", pady=(0, px(4)))
+            tag = tk.Label(row, text="BLUETOOTH / USB" if bt else "WI-FI", bg=BG, fg=VIOLET if bt else ACCENT,
+                           font=FONT_CAPS, padx=px(6), pady=px(2))
+            tag.pack(side="left", padx=px(8), pady=px(6))
+            name = tk.Label(row, text=f["name"] or f["ip"], bg=TILE, fg=FG, font=FONT_BOLD)
+            name.pack(side="left")
+            ip = tk.Label(row, text=f["ip"] if f["name"] else "", bg=TILE, fg=MUTED, font=FONT_SMALL)
+            ip.pack(side="right", padx=px(8))
+            for w in (row, tag, name, ip):
+                w.bind("<Button-1>", lambda e, a=f["ip"]: self._connect(a))
+        for name in paired:   # paired, but the Bluetooth network to it isn't connected yet
+            tk.Label(self.results, text=f"{name} is paired over Bluetooth, but its Bluetooth network isn't "
+                                        f"connected yet. On the brick: Wireless and Networks → Tethering → turn "
+                                        f"on Bluetooth. On this PC: Devices and Printers → right-click {name} → "
+                                        f"Connect using → Access point. Then click Search again.",
+                     bg=TILE, fg=MUTED, font=FONT_SMALL, justify="left", anchor="w", wraplength=px(370),
+                     padx=px(8), pady=px(6)).pack(fill="x", pady=(0, px(4)))
+
+    def close(self):
+        if self.refresh_id is not None:
+            self.after_cancel(self.refresh_id)
+        self.app.conn_win = None
+        self.destroy()
+        self.app.focus_set()
+
+
 # ---------------------------------------------------------------- app
 
 class DriveApp(tk.Tk):
@@ -900,6 +1035,9 @@ class DriveApp(tk.Tk):
         self.sound_note_id = None
         self.cards = {}            # title -> (card, head, title label), for folding
         self.cal_win = None        # CalibrateWindow while it is open
+        self.conn_win = None       # ConnectWindow while it is open
+        self.brick_host = HOST     # the address the current connection was made to
+        self.search = ev3_find.BrickSearch()   # Find bricks (Bluetooth/USB and Wi-Fi)
 
         self._build()
         self._fit_screen()
@@ -912,6 +1050,7 @@ class DriveApp(tk.Tk):
         self._dark_title_bar()
         threading.Thread(target=self._monitor, daemon=True).start()
         self.after(40, self._refresh_ui)
+        self.after(300, self._open_connection)   # every start: pick the brick
 
     def _dark_title_bar(self, window=None):
         """Dark Windows title bar matching the app (Windows 10 20H1+/11; ignored elsewhere)."""
@@ -984,6 +1123,8 @@ class DriveApp(tk.Tk):
         tk.Label(header, text="EV3 RC", bg=BG, fg=FG, font=FONT_TITLE).pack(side="left", padx=(px(5), 0))
         self.status_label = tk.Label(header, text="", bg=BG, fg=MUTED, font=FONT)
         self.status_label.pack(side="left", padx=(px(8), 0))
+        Pill(header, "📶 Brick…", self._open_connection, font=FONT_SMALL, padx=px(8), pady=px(2)).pack(
+            side="left", padx=(px(8), 0))
         self.bat_text = tk.Label(header, text="", bg=BG, fg=MUTED, font=FONT_NUM)
         self.bat_text.pack(side="right")
         self.bat_icon = BatteryIcon(header)
@@ -1247,8 +1388,11 @@ class DriveApp(tk.Tk):
     def _monitor(self):
         while not self.stop_event.is_set():
             try:
+                if self.brick.connected and self.brick_host != HOST:
+                    self.brick.close()   # another brick was picked: stop this one and let it go
                 if not self.brick.connected:
-                    self.status = ("Connecting…", WARN)
+                    self.status = (f"Connecting to {HOST}…", WARN)
+                    self.brick_host = HOST
                     self.brick.connect()
                     self.status = ("Connected", GOOD)
                     try:
@@ -1263,7 +1407,7 @@ class DriveApp(tk.Tk):
             except Exception as e:
                 self.brick.ctl = None
                 self.brick.rtt = None
-                self.status = (f"Disconnected: {e}", BAD)
+                self.status = (f"Can't reach {HOST}: {e}", BAD)
                 self.stop_event.wait(2)
                 continue
             self.stop_event.wait(MONITOR_SECONDS)
@@ -1271,7 +1415,7 @@ class DriveApp(tk.Tk):
     def _refresh_ui(self):
         text, color = self.status
         self.dot.configure(fg=color)
-        self.status_label.configure(text=HOST if color == GOOD else text[:34])
+        self.status_label.configure(text=(self.brick.name or HOST) if color == GOOD else text[:34])
         ports = sorted(self.brick.paths)
         if ports != self.known_ports:
             self._fill_port_menus(ports)
@@ -1389,6 +1533,30 @@ class DriveApp(tk.Tk):
                        "trim": self.trim.get(), "mode": self.mode.get(), "accel": self.accel.get()})
 
     # ---------- calibration ----------
+    def _open_connection(self):
+        if self.conn_win is not None:
+            self.conn_win.lift()
+            return
+        self._release_all()
+        self.conn_win = ConnectWindow(self)
+
+    def _connect_to(self, address, remember=False):
+        """Switch to another brick by name or IP address. Returns an error message, or ""."""
+        global HOST
+        host = ev3_config.parse_address(address)
+        if not host:
+            return "Type the brick's name (like ev3kishan) or its IP address (like 192.168.1.23)."
+        self._release_all()
+        HOST = host   # Brick.connect reads it; the monitor closes the old brick and connects this one
+        self.status = (f"Connecting to {host}…", WARN)
+        self.last_pos = None
+        if remember:
+            try:
+                ev3_config.save_host(host)   # the phone controller and the next start use it too
+            except OSError as e:
+                return f"Connecting, but couldn't remember it: {e.strerror or e}"
+        return ""
+
     def _open_calibration(self):
         if self.cal_win is not None:
             self.cal_win.lift()

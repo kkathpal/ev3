@@ -92,6 +92,17 @@ in its `/etc/hosts`, then reboot), run `python ev3_config.py mycar` (or set
 `"host": "mycar.local"` in the file). If `.local` names don't connect, use the brick's IP address. For a one-off, an address on the command line wins:
 `python ev3_drive.pyw 192.168.0.1`. The file is not committed to git, so each computer has its own.
 
+## Picking the brick
+
+Every time **EV3 RC** starts, a **Connect to the brick** window opens (as the phone page does).
+It searches for bricks, first ones linked to this PC over **Bluetooth or USB**, then ones on the
+same **Wi-Fi**, and labels each; click one to connect, or click **Done** to keep the current
+brick. You can also type a brick's name (like `ev3kishan`) or its IP address (shown at the top
+of the brick's screen). Bricks that are only *paired* over Bluetooth are listed with the steps
+to connect their Bluetooth network. With **Remember on this PC** ticked, the choice is saved in
+`ev3_config.json`, which the phone controller uses too. Reopen it any time with **📶 Brick…** in
+the header. The search only reads each device's SSH greeting; it never logs in to anything.
+
 ## Driving
 
 | Key | Action |

@@ -12,6 +12,7 @@ from unittest import mock
 sys.modules.setdefault("paramiko", types.ModuleType("paramiko"))   # not needed offline
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_phone import ControllerTest, FakeBrick, phone, rc   # noqa: E402  (same fixtures)
+import ev3_find   # noqa: E402
 
 
 class SwitchingBrick(FakeBrick):
@@ -93,16 +94,18 @@ class ConnectTest(ControllerTest):
 
 
 class FindBricksTest(unittest.TestCase):
+    """ev3_find, shared by the phone and EV3 RC."""
+
     def setUp(self):
-        for patcher in (mock.patch.object(phone, "lan_addresses", return_value=["192.168.4.41", "192.168.0.2"]),
-                        mock.patch.object(phone, "default_route_ip", return_value="192.168.4.41")):   # Wi-Fi
+        for patcher in (mock.patch.object(ev3_find, "lan_addresses", return_value=["192.168.4.41", "192.168.0.2"]),
+                        mock.patch.object(ev3_find, "default_route_ip", return_value="192.168.4.41")):   # Wi-Fi
             patcher.start()
             self.addCleanup(patcher.stop)
 
     def test_searches_private_networks_links_first(self):
-        with mock.patch.object(phone, "lan_addresses",
+        with mock.patch.object(ev3_find, "lan_addresses",
                                return_value=["192.168.4.41", "169.254.9.9", "8.8.4.4", "192.168.0.2"]):
-            nets = [(str(n), via) for n, via in phone.scan_networks()]
+            nets = [(str(n), via) for n, via in ev3_find.scan_networks()]
         self.assertEqual(nets, [("192.168.0.0/24", "Bluetooth / USB"),   # the small link first
                                 ("192.168.4.0/22", "Wi-Fi")])            # not link-local or public ones
 
@@ -113,8 +116,8 @@ class FindBricksTest(unittest.TestCase):
                    "192.168.4.41": "SSH-2.0-OpenSSH_9.0p1 Debian-1"}           # this PC itself
         names = {"192.168.4.57": "ev3krutin.lan", "192.168.0.1": "ev3kk"}
         reports = []
-        with mock.patch.object(phone, "ssh_banner", side_effect=lambda ip: banners.get(ip)) as banner,              mock.patch.object(phone.socket, "gethostbyaddr", side_effect=lambda ip: (names[ip], [], [])):
-            found = phone.find_bricks(report=lambda so_far: reports.append([dict(f) for f in so_far]))
+        with mock.patch.object(ev3_find, "ssh_banner", side_effect=lambda ip: banners.get(ip)) as banner,              mock.patch.object(ev3_find.socket, "gethostbyaddr", side_effect=lambda ip: (names[ip], [], [])):
+            found = ev3_find.find_bricks(report=lambda so_far: reports.append([dict(f) for f in so_far]))
         self.assertEqual(found, [{"ip": "192.168.0.1", "name": "ev3kk", "via": "Bluetooth / USB"},
                                  {"ip": "192.168.4.57", "name": "ev3krutin", "via": "Wi-Fi"}])
         asked = [call.args[0] for call in banner.call_args_list]
@@ -128,21 +131,29 @@ class FindBricksTest(unittest.TestCase):
         with mock.patch.object(phone.threading, "Thread"):
             controller = phone.Controller()
         found = [{"ip": "192.168.4.46", "name": "ev3krutin", "via": "Wi-Fi"}]
-        with mock.patch.object(phone, "find_bricks", return_value=found),              mock.patch.object(phone, "paired_bluetooth_bricks", return_value=["ev3kk", "ev3krutin"]):
-            controller._scan()
-        self.assertEqual(controller.scan, {"running": False, "found": found, "paired": ["ev3kk"], "error": ""})
+        with mock.patch.object(ev3_find, "find_bricks", return_value=found),              mock.patch.object(ev3_find, "paired_bluetooth_bricks", return_value=["ev3kk", "ev3krutin"]):
+            controller.search.run()
+        self.assertEqual(controller.search.state, {"running": False, "found": found, "paired": ["ev3kk"], "error": ""})
 
     def test_scan_runs_in_the_background_once(self):
         with mock.patch.object(phone.threading, "Thread"):
             controller = phone.Controller()
-        with mock.patch.object(phone.threading, "Thread") as thread:
+        with mock.patch.object(ev3_find.threading, "Thread") as thread:
             controller.start_scan()
             controller.start_scan()   # already running: not started twice
         self.assertEqual(thread.call_count, 1)
-        with mock.patch.object(phone, "find_bricks", return_value=[]),              mock.patch.object(phone, "paired_bluetooth_bricks", return_value=[]):
-            controller._scan()
-        self.assertEqual(controller.scan, {"running": False, "found": [], "paired": [],
+        with mock.patch.object(ev3_find, "find_bricks", return_value=[]),              mock.patch.object(ev3_find, "paired_bluetooth_bricks", return_value=[]):
+            controller.search.run()
+        self.assertEqual(controller.search.state, {"running": False, "found": [], "paired": [],
                                            "error": "No bricks found on this PC's networks."})
+
+
+class AddressTest(unittest.TestCase):
+    def test_parse_address(self):
+        self.assertEqual(rc.ev3_config.parse_address(" ev3kishan "), "ev3kishan.local")
+        self.assertEqual(rc.ev3_config.parse_address("192.168.4.46"), "192.168.4.46")
+        for bad in ("", "  ", "ev3 kishan", "a;b", "rm -rf /", None, 42):
+            self.assertIsNone(rc.ev3_config.parse_address(bad), bad)
 
 
 if __name__ == "__main__":
