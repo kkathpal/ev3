@@ -272,7 +272,7 @@ class Poller(threading.Thread):
     def _connect(self):
         self.client = paramiko.SSHClient()
         self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        self.client.connect(HOST, username=USER, password=PASSWORD, timeout=8,
+        self.client.connect(ev3_config.ssh_address(HOST), username=USER, password=PASSWORD, timeout=8,
                             look_for_keys=False, allow_agent=False)
         transport = self.client.get_transport()
         transport.set_keepalive(5)

@@ -183,7 +183,7 @@ class Brick:
     def connect(self):
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(HOST, username=USER, password=PASSWORD, timeout=8,
+        client.connect(ev3_config.ssh_address(HOST), username=USER, password=PASSWORD, timeout=8,
                        look_for_keys=False, allow_agent=False)
         transport = client.get_transport()
         transport.set_keepalive(5)

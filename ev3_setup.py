@@ -131,7 +131,7 @@ def main():
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
-        client.connect(host, username=config["user"], password=config["password"], timeout=10,
+        client.connect(ev3_config.ssh_address(host), username=config["user"], password=config["password"], timeout=10,
                        look_for_keys=False, allow_agent=False)
     except Exception as e:
         sys.exit(f"Can't connect to {host}: {e}\nCheck the brick is on (its screen shows an IP address) "

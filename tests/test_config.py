@@ -36,6 +36,14 @@ class ConfigTest(unittest.TestCase):
         with mock.patch.object(sys, "argv", ["ev3_drive.pyw"]):
             self.assertEqual(ev3_config.load()["host"], "ev3kishan.local")
 
+    def test_ssh_address_prefers_ipv4(self):
+        v4 = [(ev3_config.socket.AF_INET, 1, 6, "", ("192.168.0.1", 22))]
+        with mock.patch.object(ev3_config.socket, "getaddrinfo", return_value=v4) as lookup:
+            self.assertEqual(ev3_config.ssh_address("ev3arthur.local"), "192.168.0.1")
+            self.assertEqual(lookup.call_args.args[2], ev3_config.socket.AF_INET)   # asks for IPv4 only
+        with mock.patch.object(ev3_config.socket, "getaddrinfo", side_effect=OSError("not found")):
+            self.assertEqual(ev3_config.ssh_address("ev3arthur.local"), "ev3arthur.local")   # connect reports it
+
     def test_save_host_without_a_file_uses_defaults(self):
         ev3_config.save_host("ev3kishan.local")
         with open(self.file) as f:

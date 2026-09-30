@@ -11,6 +11,7 @@ still wins, for a one-off:   python ev3_drive.pyw 192.168.0.1
 """
 import json
 import os
+import socket
 import sys
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ev3_config.json")
@@ -37,6 +38,16 @@ def load():
     if len(sys.argv) > 1:
         config["host"] = sys.argv[1]
     return config
+
+
+def ssh_address(host, port=22):
+    """Where to open SSH to `host`: its first IPv4 address when it has one. Windows can list
+    a .local name's IPv6 link-local address first, which ev3dev's SSH doesn't answer on, and
+    paramiko gives up after that one timed-out attempt instead of trying the next address."""
+    try:
+        return socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
+    except (OSError, IndexError):
+        return host   # no IPv4 address (or not found right now): let the connect report it
 
 
 def brick_address(name):
