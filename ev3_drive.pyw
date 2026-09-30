@@ -77,6 +77,7 @@ STEER_SECONDS = 0.5      # time for steering to swing fully (short, so turns res
 # quickly) or "hold" (actively drives the wheel back to where it stopped, strongest).
 RELEASE_STOP = "brake"   # letting go of the keys
 HARD_STOP = "hold"       # Space, the STOP button, window/phone losing focus
+STICK_DEADZONE = 0.12    # phone joystick: this much of its reach around the centre does nothing
 TURN_INNER = 0.35        # inner wheel speed while curving, as a fraction of the outer
 PULSE_MS = 400           # each drive command runs this long...
 RENEW_MS = 120           # ...and is renewed this often while a key is held
@@ -165,6 +166,11 @@ mon() {
 """
 
 
+class MotorsChanged(ConnectionError):
+    """A motor was plugged in or out: reconnect at once (drop() first), so the brick-side
+    watchdog covers the new motors and the apps can pick the pair again (pick_motors)."""
+
+
 class Brick:
     """SSH connection with two long-lived shells: `ctl` for drive commands, `mon` for readback."""
 
@@ -217,6 +223,15 @@ class Brick:
             self.mon, self.mon_out = mon, mon.makefile("r")
         # Brake gives a crisp stop on key release; restored to ev3dev's default on close.
         self.send(" ".join(f"echo brake > {p}/stop_action;" for p in self.paths.values()))
+
+    def drop(self):
+        """End this connection without touching the motors, to connect() again straight away.
+        Its shells end with it, and so does its watchdog (stopping the motors if in Turbo)."""
+        with self.lock:
+            client = self.client
+            self.client = self.ctl = self.mon = self.mon_out = None
+        if client is not None:
+            client.close()
 
     def close(self):
         if self.connected:
@@ -342,7 +357,7 @@ class Brick:
                     values.append(tuple(int(x) for x in line.split()))
             self.rtt = time.perf_counter() - start
         if sorted(present) != sorted(self.paths.values()):
-            raise ConnectionError("motors changed, reconnecting")
+            raise MotorsChanged("motors changed, reconnecting")
         self.measured = {self.paths[p]: v[0] / MOTOR_LIMIT for p, v in zip(ports, values)}
         return dict(zip(ports, values))
 
@@ -375,28 +390,59 @@ HB=/tmp/ev3rc.$$.hb; echo 0 > $HB; ctl=$$
 """
 
 
-def wheel_commands(held, mode, trim=0):
-    """Wheel speeds (deg/s, + = forward) for the held directions ("up", "down", "left", "right").
-
-    Shared with ev3_phone.py so the phone drives exactly like this app.
-    """
+def arrow_speeds(held, mode):
+    """wheel_commands before Drift fix: the move the held arrows make in this gear."""
     forward = ("up" in held) - ("down" in held)
     turn = ("right" in held) - ("left" in held)
     top = MOTOR_LIMIT if mode == TURBO else MAX_SPEED
     speed = top * dict(MODES)[mode] // 100
     if forward == 0:                          # spin in place
-        left, right = turn * speed, -turn * speed
-    else:                                     # drive, slowing the inner wheel to curve
-        left = right = forward * speed
-        if turn > 0:
-            right = int(right * TURN_INNER)
-        elif turn < 0:
-            left = int(left * TURN_INNER)
-    # Drift fix: speed one wheel up and the other down by the same share.
+        return turn * speed, -turn * speed
+    left = right = forward * speed            # drive, slowing the inner wheel to curve
+    if turn > 0:
+        right = int(right * TURN_INNER)
+    elif turn < 0:
+        left = int(left * TURN_INNER)
+    return left, right
+
+
+def drift_fix(left, right, trim):
+    """Speed one wheel up and the other down by the same share, within what ev3dev accepts."""
     t = trim / 100
-    left, right = left * (1 + t), right * (1 - t)
     clamp = lambda v: int(max(-MOTOR_LIMIT, min(MOTOR_LIMIT, v)))
-    return clamp(left), clamp(right)
+    return clamp(left * (1 + t)), clamp(right * (1 - t))
+
+
+def wheel_commands(held, mode, trim=0):
+    """Wheel speeds (deg/s, + = forward) for the held directions ("up", "down", "left", "right").
+
+    Shared with ev3_phone.py so the phone drives exactly like this app.
+    """
+    return drift_fix(*arrow_speeds(held, mode), trim)
+
+
+# The arrows' eight moves by stick direction, clockwise from straight ahead (for stick_commands).
+STICK_MOVES = [{"up"}, {"up", "right"}, {"right"}, {"down", "right"},
+               {"down"}, {"down", "left"}, {"left"}, {"up", "left"}]
+
+
+def stick_commands(x, y, mode, trim=0):
+    """Wheel speeds (deg/s, + = forward) for a joystick at x (right) and y (forward), each -1..1.
+
+    How far the stick is pushed sets the speed, up to the gear's top at the rim. Its direction
+    blends the two nearest arrow moves, so the eight arrow directions drive exactly like the
+    keys and the angles between them curve smoothly, with no jump anywhere around the circle.
+    Used by ev3_phone.py's joystick.
+    """
+    reach = min(1.0, math.hypot(x, y))
+    if reach <= STICK_DEADZONE:
+        return 0, 0
+    power = (reach - STICK_DEADZONE) / (1 - STICK_DEADZONE)
+    i, share = divmod((math.degrees(math.atan2(x, y)) % 360) / 45, 1)
+    a, b = (arrow_speeds(STICK_MOVES[(int(i) + k) % 8], mode) for k in (0, 1))
+    # Round, not truncate: at the rim, floating-point noise must still give the keys' exact speeds.
+    left, right = (round((p + (q - p) * share) * power) for p, q in zip(a, b))
+    return drift_fix(left, right, trim)
 
 
 def ramp_seconds(settings):
@@ -445,6 +491,18 @@ def cal_result(choice):
 
 def port_name(port):
     return f"Motor {port[-1]}" if port.startswith("out") else port
+
+
+def pick_motors(left, right, ports):
+    """The (left, right) motors to drive: the saved picks when the brick has them, otherwise
+    others it has, so moving the cables to other sockets still drives. Shared with ev3_phone.py."""
+    if len(ports) < 2:
+        return left, right   # nothing to drive yet: keep the saved picks
+    if left not in ports:
+        left = next(p for p in ports if p != right)
+    if right not in ports or right == left:
+        right = next(p for p in ports if p != left)
+    return left, right
 
 
 def load_settings():
@@ -1195,6 +1253,9 @@ class DriveApp(tk.Tk):
                         pass   # sound list is optional; driving still works
                 self.readings = self.brick.read_motors()
                 self.reading_seq += 1
+            except MotorsChanged:
+                self.brick.drop()   # reconnect now; _refresh_ui then picks the pair (pick_motors)
+                continue
             except Exception as e:
                 self.brick.ctl = None
                 self.brick.rtt = None
@@ -1290,11 +1351,7 @@ class DriveApp(tk.Tk):
             for port in ports:
                 m.add_command(label=port_name(port), command=lambda p=port, v=var: v.set(p))
         if len(ports) >= 2:
-            left, right = self.left_port.get(), self.right_port.get()
-            if left not in ports:
-                left = next(p for p in ports if p != right)
-            if right not in ports or right == left:
-                right = next(p for p in ports if p != left)
+            left, right = pick_motors(self.left_port.get(), self.right_port.get(), ports)
             self.left_port.set(left)
             self.right_port.set(right)
         self._ports_changed()

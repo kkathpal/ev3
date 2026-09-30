@@ -2,6 +2,9 @@
 
 Run from the project folder:   python -m unittest discover -s tests -v
 """
+import io
+import itertools
+import math
 import os
 import sys
 import types
@@ -133,6 +136,36 @@ class DriveTest(unittest.TestCase):
         left, _ = self.drive({"up"}, "Fast")
         self.assertLess(left, self.first_step())   # starts gently again after a stop
 
+    def read(self, lines):
+        """read_motors on a fake monitor shell that answers with `lines`."""
+        self.brick.mon = types.SimpleNamespace(sendall=lambda data: None)
+        self.brick.mon_out = io.StringIO("\n".join(lines) + "\n__END__\n")
+        return self.brick.read_motors()
+
+    def test_motor_change_is_noticed_and_drop_leaves_the_motors_alone(self):
+        self.assertEqual(self.read(["motors L", "motors R", "bat 7500000 Li-ion", "10 200", "-10 400"]),
+                         {"outA": (10, 200), "outD": (-10, 400)})
+        self.assertEqual(self.brick.battery, (7.5, "Li-ion"))
+        for lines in (["motors L", "motors X", "10 200", "-10 400"],             # a cable moved
+                      ["motors L", "motors R", "motors M", "10 200", "-10 400"],   # a third plugged in
+                      ["motors L", "10 200"]):                                     # one unplugged
+            with self.subTest(lines=lines):
+                with self.assertRaises(rc.MotorsChanged) as raised:
+                    self.read(lines)
+                self.assertIsInstance(raised.exception, ConnectionError)   # other handlers still reconnect
+        # drop(): the pulses expire (the watchdog stops Turbo), so no stop command, and connect()
+        # gets a fresh watchdog; the old paths stay until it finds the new ones.
+        self.brick.ctl = types.SimpleNamespace(closed=False)
+        self.brick.drive("L", "R", 100, 100)
+        sent = len(self.brick.sent)
+        self.brick.drop()
+        self.assertEqual(len(self.brick.sent), sent)
+        self.assertFalse(self.brick.connected)
+        self.assertIsNone(self.brick.mon)
+        self.assertEqual(self.brick.paths, {"outA": "L", "outD": "R"})
+        with self.assertRaises(ConnectionError):
+            self.brick.read_motors()
+
 
 class CalibrateTest(unittest.TestCase):
     """Calibrate by driving, against every way two motors can be fitted."""
@@ -179,6 +212,162 @@ class CalibrateTest(unittest.TestCase):
         self.assertIn("opposite", reason)
         result, reason = rc.cal_result({"up": "up", "down": None, "left": "left", "right": "right"})
         self.assertIsNone(result)
+
+
+class StickTest(unittest.TestCase):
+    """The phone joystick: exactly the arrows' moves where it points like an arrow, and no
+    jump anywhere in between, so the robot never lurches as a thumb slides round."""
+
+    STEP = 0.25   # degrees between sweep samples
+    R = math.sqrt(0.5)
+    RIM = [(0, 1), (R, R), (1, 0), (R, -R), (0, -1), (-R, -R), (-1, 0), (-R, R)]   # rc.STICK_MOVES' order
+    P = float(f"{R:.3f}")   # 0.707: ev3_phone.html sends the stick with toFixed(3), a hair short of the rim
+    PHONE = [(0, 1), (P, P), (1, 0), (P, -P), (0, -1), (-P, -P), (-1, 0), (-P, P)]
+    TRIMS = (-rc.TRIM_RANGE, -12, -7, 0, 3, 8, rc.TRIM_RANGE)
+
+    @staticmethod
+    def at(angle, mode, trim=0):
+        """stick_commands for a stick at the rim, `angle` degrees clockwise from straight ahead."""
+        a = math.radians(angle)
+        return rc.stick_commands(math.sin(a), math.cos(a), mode, trim)
+
+    def test_arrow_directions_drive_like_the_keys(self):
+        # Exactly, not within 1: stick_commands round()s before the Drift fix so that the
+        # diagonals' sqrt(0.5) noise, and the page's three-decimal stick, still give the keys' speeds.
+        for mode in dict(rc.MODES):
+            for trim in self.TRIMS:
+                for exact, phone, held in zip(self.RIM, self.PHONE, rc.STICK_MOVES):
+                    want = rc.wheel_commands(held, mode, trim)
+                    for point in (exact, phone):
+                        with self.subTest(mode=mode, trim=trim, held=sorted(held), point=point):
+                            self.assertEqual(rc.stick_commands(*point, mode, trim), want)
+
+    def test_beyond_the_rim_is_the_rim(self):
+        for mode in dict(rc.MODES):
+            with self.subTest(mode=mode):
+                self.assertEqual(rc.stick_commands(1, 1, mode), rc.stick_commands(self.R, self.R, mode))
+                self.assertEqual(rc.stick_commands(0, 3, mode), rc.stick_commands(0, 1, mode))
+                self.assertEqual(rc.stick_commands(-2, 0, mode), rc.stick_commands(-1, 0, mode))
+
+    def test_dead_zone(self):
+        dz = rc.STICK_DEADZONE
+        for mode in dict(rc.MODES):
+            with self.subTest(mode=mode):
+                self.assertEqual(rc.stick_commands(0, 0, mode), (0, 0))
+                self.assertEqual(rc.stick_commands(0, dz, mode), (0, 0))                   # the edge itself
+                self.assertEqual(rc.stick_commands(dz * 0.7, -dz * 0.7, mode), (0, 0))   # inside, diagonally
+                left, right = rc.stick_commands(0, dz + 0.02, mode)
+                self.assertEqual(left, right)
+                self.assertGreater(left, 0)
+                self.assertLess(left, rc.arrow_speeds({"up"}, mode)[0] * 0.05)   # creeps, no lurch
+
+    def test_reach_sets_the_speed(self):
+        halfway = (rc.STICK_DEADZONE + 1) / 2
+        for mode in dict(rc.MODES):
+            with self.subTest(mode=mode):
+                left, right = rc.stick_commands(0, halfway, mode)
+                self.assertEqual(left, right)
+                self.assertAlmostEqual(left, rc.arrow_speeds({"up"}, mode)[0] / 2, delta=1)
+
+    def test_no_jumps_around_the_circle(self):
+        for mode in dict(rc.MODES):
+            for trim in (0, 10):
+                with self.subTest(mode=mode, trim=trim):
+                    # The steepest sector swings a wheel from +top to -top over 45° (spinning right
+                    # into curving back-right), so one STEP may move it 2 * top * STEP / 45, with
+                    # the Drift fix share on top of that. Rounding adds up to about 2, not 1:
+                    # stick_commands round()s each sample (half either way, so up to 1 between
+                    # two, and drift_fix scales that by the trim share), then drift_fix int()-
+                    # truncates the trimmed value (up to 1 more between two samples).
+                    share = 1 + trim / 100
+                    top = rc.arrow_speeds({"up"}, mode)[0] * share
+                    bound = 2 * top * self.STEP / 45 + share + 1
+                    prev = self.at(0, mode, trim)
+                    for k in range(1, int(360 / self.STEP) + 1):   # up to and including 360°
+                        angle = k * self.STEP
+                        cur = self.at(angle, mode, trim)
+                        self.assertLessEqual(max(abs(c - p) for c, p in zip(cur, prev)), bound, f"at {angle}°")
+                        prev = cur
+                    self.assertEqual(prev, self.at(0, mode, trim))   # 360° meets 0°
+                    # ...and a hair either side of the axes, closer than the sweep steps
+                    for above, below in (((1e-6, 1), (-1e-6, 1)), ((1, 1e-6), (1, -1e-6)), ((-1, 1e-6), (-1, -1e-6))):
+                        a, b = rc.stick_commands(*above, mode, trim), rc.stick_commands(*below, mode, trim)
+                        self.assertLessEqual(max(abs(p - q) for p, q in zip(a, b)), 1, (above, below))
+
+    def test_spin_direction_holds_across_the_sideways_axis(self):
+        # A thumb wobbling around y = 0 while pushing sideways must keep the robot spinning the
+        # same way (a design that snapped to the nearest arrow flipped between "right" and
+        # "down-right" here).
+        for x in (1, -1):
+            spin = rc.stick_commands(x, 0, "Normal")
+            for y in (0.02, -0.02):
+                with self.subTest(x=x, y=y):
+                    left, right = rc.stick_commands(x, y, "Normal")
+                    self.assertEqual((left > 0, right > 0), (spin[0] > 0, spin[1] > 0))
+                    self.assertGreater(min(abs(left), abs(right)), abs(spin[0]) * 0.9)   # still nearly the spin
+
+
+class PickMotorsTest(unittest.TestCase):
+    """Which motors to drive after the cables moved: what DriveApp's Setup card always did,
+    now shared with the phone (which used to keep the saved ports and silently send nothing)."""
+
+    NAMES = ("outA", "outB", "outC", "outD")
+
+    @staticmethod
+    def desktop_pick(left, right, ports):
+        """DriveApp._fill_port_menus' own picking before pick_motors was split out of it
+        (git show HEAD:ev3_drive.pyw), so both apps keep choosing exactly as the desktop did."""
+        if len(ports) >= 2:
+            if left not in ports:
+                left = next(p for p in ports if p != right)
+            if right not in ports or right == left:
+                right = next(p for p in ports if p != left)
+        return left, right
+
+    def test_saved_pair_present_is_kept(self):
+        self.assertEqual(rc.pick_motors("outA", "outD", ["outA", "outD"]), ("outA", "outD"))
+        self.assertEqual(rc.pick_motors("outD", "outA", ["outA", "outD"]), ("outD", "outA"))   # order too
+        self.assertEqual(rc.pick_motors("outA", "outD", ["outA", "outB", "outD"]), ("outA", "outD"))
+
+    def test_one_saved_motor_missing_takes_the_other_plugged_one(self):
+        self.assertEqual(rc.pick_motors("outA", "outD", ["outB", "outD"]), ("outB", "outD"))
+        self.assertEqual(rc.pick_motors("outA", "outD", ["outA", "outC"]), ("outA", "outC"))
+        self.assertEqual(rc.pick_motors("outA", "outD", ["outA", "outB", "outC"]), ("outA", "outB"))
+
+    def test_both_saved_motors_missing_takes_the_two_plugged(self):
+        self.assertEqual(rc.pick_motors("outA", "outD", ["outB", "outC"]), ("outB", "outC"))   # the user's case
+        self.assertEqual(rc.pick_motors("outA", "outD", ["outC", "outB"]), ("outC", "outB"))   # in the brick's order
+
+    def test_same_motor_on_both_sides_is_fixed(self):
+        self.assertEqual(rc.pick_motors("outA", "outA", ["outA", "outD"]), ("outA", "outD"))
+        self.assertEqual(rc.pick_motors("outD", "outD", ["outA", "outD"]), ("outD", "outA"))
+        self.assertEqual(rc.pick_motors("outB", "outB", ["outA", "outD"]), ("outA", "outD"))
+
+    def test_fewer_than_two_motors_keeps_the_saved_picks(self):
+        # Nothing can drive yet, and the saved pair must survive a motor being plugged in later.
+        for ports in ([], ["outA"], ["outB"]):
+            with self.subTest(ports=ports):
+                self.assertEqual(rc.pick_motors("outA", "outD", ports), ("outA", "outD"))
+                self.assertEqual(rc.pick_motors("outA", "outA", ports), ("outA", "outA"))
+
+    def test_three_motors_plugged(self):
+        self.assertEqual(rc.pick_motors("outA", "outD", ["outA", "outC", "outD"]), ("outA", "outD"))
+        self.assertEqual(rc.pick_motors("outB", "outC", ["outA", "outC", "outD"]), ("outA", "outC"))
+        self.assertEqual(rc.pick_motors("outC", "outB", ["outA", "outC", "outD"]), ("outC", "outA"))
+        self.assertEqual(rc.pick_motors("outB", "outB", ["outA", "outC", "outD"]), ("outA", "outC"))
+
+    def test_matches_the_desktop_app_for_every_case(self):
+        # Every saved pair (including stale and doubled ones) against every set of plugged motors.
+        for left in self.NAMES + ("outX",):
+            for right in self.NAMES + ("outX",):
+                for n in range(len(self.NAMES) + 1):
+                    for ports in itertools.combinations(self.NAMES, n):
+                        with self.subTest(saved=(left, right), ports=ports):
+                            got = rc.pick_motors(left, right, list(ports))
+                            self.assertEqual(got, self.desktop_pick(left, right, list(ports)))
+                            if n >= 2:   # ...and always something that can drive
+                                self.assertNotEqual(got[0], got[1])
+                                self.assertTrue(set(got) <= set(ports), got)
 
 
 if __name__ == "__main__":

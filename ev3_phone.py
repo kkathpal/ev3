@@ -10,12 +10,13 @@ Run:   python ev3_phone.py               (brick address from ev3_config.json)
 It uses a random free port from 8000-8999 (unless --port picks one) and prints
 the http://<this PC>:<port> address to open on your phone.
 
-Safety: the phone re-sends the held buttons every ~100 ms. Each command only runs
+Safety: the phone re-sends the joystick position (or held keys) every ~100 ms. Each command only runs
 the motors briefly (Turbo is covered by the brick-side watchdog), and this server
 also stops the robot if a phone goes quiet for PHONE_TIMEOUT, so lifting your
 finger, locking the phone or losing Wi-Fi stops the robot.
 """
 import json
+import math
 import os
 import random
 import socket
@@ -51,8 +52,18 @@ PHONE_TIMEOUT = 0.35   # stop if the driving phone sends nothing for this long (
 DIRECTIONS = {"up", "down", "left", "right"}
 
 
+def parse_stick(value):
+    """A /drive request's joystick position as (x, y), each clamped to -1..1, or None if it
+    isn't one (json.loads accepts NaN and Infinity, which would reach the motors)."""
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in value):
+        return None
+    return tuple(max(-1.0, min(1.0, float(v))) for v in value)
+
+
 class Controller:
-    """Owns the brick connection; turns phone button states into drive pulses."""
+    """Owns the brick connection; turns the phone's joystick (or held keys) into drive pulses."""
 
     def __init__(self):
         self.brick = rc.Brick()
@@ -63,10 +74,12 @@ class Controller:
         if self.mode not in dict(rc.MODES):
             self.mode = "Normal"
         self.held = set()
+        self.stick = None      # (x, y) while a thumb is on the joystick; wins over held keys
         self.moving = False
         self.last_command = 0.0
         self.status = "Connecting…"
         self.readings = {}
+        self.known_ports = []   # the brick's motors when the pair was last checked
         self.trip_cm = self.top_speed = 0.0
         self.last_pos = None
         self.telemetry = {}
@@ -87,34 +100,54 @@ class Controller:
         s = self.settings
         return s.get("left", rc.DEFAULT_LEFT), s.get("right", rc.DEFAULT_RIGHT)
 
+    def _check_ports(self):
+        """When the brick's motors change, pick the pair like the desktop does: the saved one if
+        it's plugged in, otherwise the motors that are (saved, so both apps agree)."""
+        ports = sorted(self.brick.paths)
+        if ports == self.known_ports:
+            return
+        self.known_ports = ports
+        with self.lock:
+            self._reload_settings()
+            left, right = self._ports()
+            picked = rc.pick_motors(left, right, ports)
+            if picked != (left, right):
+                self._save({"left": picked[0], "right": picked[1]})   # stops first
+
     def _inverts(self):
         legacy = self.settings.get("reverse", False)
         return (self.settings.get("invert_left", legacy), self.settings.get("invert_right", legacy))
 
     # ----- driving -----
-    def drive(self, held, mode=None):
+    def drive(self, held, mode=None, stick=None):
         with self.lock:
             if mode in dict(rc.MODES) and mode != self.mode:
                 self.set_mode(mode)
-            self.held = {d for d in held if d in DIRECTIONS}
+            self.stick = parse_stick(stick)
+            self.held = {d for d in held if d in DIRECTIONS} if isinstance(held, list) else set()
             self.last_command = time.monotonic()
             self._send()
 
     def _send(self):
         self._reload_settings()
         inv_l, inv_r = self._inverts()
-        left, right = rc.wheel_commands(self.held, self.mode, self.settings.get("trim", 0))
+        trim = self.settings.get("trim", 0)
+        if self.stick:
+            left, right = rc.stick_commands(*self.stick, self.mode, trim)
+        else:
+            left, right = rc.wheel_commands(self.held, self.mode, trim)
         lp_name, rp_name = self._ports()
         lp, rp = self.brick.paths.get(lp_name), self.brick.paths.get(rp_name)
         if (left or right) and self.brick.connected and lp and rp and lp != rp:
             rc.send_drive(self.brick, lp, rp, left, right, self.mode, inv_l, inv_r,
                           rc.ramp_seconds(self.settings))   # the desktop app's Acceleration setting
             self.moving = True
-        elif self.moving or not self.held:
+        elif self.moving or not (self.held or self.stick):
             self.stop(released=True)
 
     def stop(self, released=False):
         self.held = set()
+        self.stick = None
         if self.brick.connected:
             self.brick.stop(released)
         self.moving = False
@@ -134,6 +167,7 @@ class Controller:
         TEST_SPEED timed pulses) while the phone keeps re-sending it; _safety stops it after."""
         with self.lock:
             self.held = set()
+            self.stick = None
             self.last_command = time.monotonic()
             self._reload_settings()
             lp_name, rp_name = self._ports()
@@ -213,8 +247,14 @@ class Controller:
                     self.status = "Connecting…"
                     self.brick.connect()
                 self.readings = self.brick.read_motors()
+                self._check_ports()
                 self.status = "Connected"
                 self._update_telemetry()
+            except rc.MotorsChanged:
+                # Reconnect now, without a "disconnected" pause: the phone keeps its last
+                # telemetry meanwhile, and the next heartbeat drives the newly picked pair.
+                self.brick.drop()
+                continue
             except Exception as e:
                 self.brick.ctl = None
                 self.brick.rtt = None
@@ -251,7 +291,7 @@ class Controller:
             battery = max(0.0, min(1.0, (volts - lo) / (hi - lo)))
         known = sorted(self.brick.paths)
         warning = ("Plug in two motors" if len(known) < 2 else
-                   "Pick two different motors in the desktop app" if lp == rp else
+                   "Pick two different motors in Setup" if lp == rp else
                    f"Motor {lp[-1]} / {rp[-1]} not found" if lp not in known or rp not in known else "")
         self.telemetry = {
             "connected": self.brick.connected and self.status == "Connected",
@@ -324,7 +364,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self._json({"error": "bad json"}, 400)
         if self.path == "/drive":
-            controller.drive(data.get("held", []), data.get("mode"))
+            controller.drive(data.get("held", []), data.get("mode"), data.get("stick"))
         elif self.path == "/stop":
             with controller.lock:
                 controller.stop()
@@ -332,7 +372,7 @@ class Handler(BaseHTTPRequestHandler):
             with controller.lock:
                 if data.get("mode") in dict(rc.MODES):
                     controller.set_mode(data["mode"])
-                    if controller.held:
+                    if controller.held or controller.stick:
                         controller._send()
         elif self.path == "/reset":
             controller.reset_trip()
