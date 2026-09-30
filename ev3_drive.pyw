@@ -81,6 +81,7 @@ TURN_INNER = 0.35        # inner wheel speed while curving, as a fraction of the
 PULSE_MS = 400           # each drive command runs this long...
 RENEW_MS = 120           # ...and is renewed this often while a key is held
 KEY_RELEASE_MS = 40      # a key release counts only if no press follows within this (auto-repeat)
+HORN_GAP = 0.8           # at most one horn per this many seconds
 MONITOR_SECONDS = 0.2    # how often motor speed/position is read back
 WHEEL_MM = 56            # wheel diameter for speed/trip (standard EV3 tyre is 56 mm)
 MOTOR_LIMIT = 1050       # ev3dev rejects speed_sp above the motor's max_speed
@@ -178,6 +179,7 @@ class Brick:
         self.levels_time = 0.0   # when those were sent (time.monotonic)
         self.coasting = False    # last stop let the motors roll instead of braking
         self.measured = {}       # last read-back speed per motor path, as a fraction of full
+        self.last_horn = -HORN_GAP
         self.lock = threading.Lock()
 
     @property
@@ -289,6 +291,11 @@ class Brick:
             f"echo run-direct > {left_path}/command; echo run-direct > {right_path}/command")
 
     def horn(self):
+        """Honk, at most once per HORN_GAP seconds (a held key or a repeated tap would stack them)."""
+        now = time.monotonic()
+        if now - self.last_horn < HORN_GAP:
+            return False
+        self.last_horn = now
         return self.send(ev3_sound.horn())
 
     def query_sounds(self):

@@ -45,9 +45,13 @@ def say_and_keep(text, home):
     return cmd, path
 
 
+HORN_MAX_SECONDS = 3   # a horn player still running after this is stuck: stop it
+
+
 def horn():
-    """Honk, unless a sound is already playing (a held key repeats)."""
-    return f"(pgrep -x aplay >/dev/null || aplay -q {HORN}) &"
+    """Honk. Repeats from a held key are limited on the PC (Brick.horn), not by checking for
+    a running aplay: one that never exits would otherwise block every horn after the first."""
+    return f"(timeout {HORN_MAX_SECONDS} aplay -q {HORN}) &"
 
 
 def set_volume(percent):

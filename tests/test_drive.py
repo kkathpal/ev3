@@ -108,11 +108,21 @@ class DriveTest(unittest.TestCase):
         self.assertIn("$HB", self.brick.sent[-1])   # heartbeat for the brick-side watchdog
 
     def test_horn_plays_in_background_once(self):
-        self.brick.horn()
+        self.assertTrue(self.brick.horn())
         cmd = self.brick.sent[-1]
         self.assertIn(rc.ev3_sound.HORN, cmd)
         self.assertTrue(cmd.rstrip().endswith("&"))   # never blocks the drive command shell
-        self.assertIn("pgrep -x aplay", cmd)          # a held key doesn't stack horns
+        self.assertIn("timeout", cmd)                 # a stuck player can't pile up
+        self.assertNotIn("pgrep", cmd)                # ...or block the next horn
+        self.now += 0.1
+        self.assertFalse(self.brick.horn())           # a held key doesn't stack horns
+        self.assertEqual(len(self.brick.sent), 1)
+
+    def test_horn_works_again_and_again(self):
+        for _ in range(5):
+            self.assertTrue(self.brick.horn())
+            self.now += rc.HORN_GAP
+        self.assertEqual(len(self.brick.sent), 5)
 
     def test_stop_actions_and_ramp_restart(self):
         self.drive({"up"}, "Fast", self.full_ramp())
