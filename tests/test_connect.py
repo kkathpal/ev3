@@ -93,22 +93,44 @@ class ConnectTest(ControllerTest):
 
 
 class FindBricksTest(unittest.TestCase):
-    def test_searches_private_networks_only(self):
-        with mock.patch.object(phone, "lan_addresses", return_value=["192.168.4.41", "169.254.9.9", "8.8.4.4", "192.168.0.2"]):
-            nets = [str(n) for n in phone.scan_networks()]
-        self.assertEqual(nets, ["192.168.4.0/22", "192.168.0.0/22"])   # Wi-Fi and the Bluetooth link
+    def setUp(self):
+        for patcher in (mock.patch.object(phone, "lan_addresses", return_value=["192.168.4.41", "192.168.0.2"]),
+                        mock.patch.object(phone, "default_route_ip", return_value="192.168.4.41")):   # Wi-Fi
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_searches_private_networks_links_first(self):
+        with mock.patch.object(phone, "lan_addresses",
+                               return_value=["192.168.4.41", "169.254.9.9", "8.8.4.4", "192.168.0.2"]):
+            nets = [(str(n), via) for n, via in phone.scan_networks()]
+        self.assertEqual(nets, [("192.168.0.0/24", "Bluetooth / USB"),   # the small link first
+                                ("192.168.4.0/22", "Wi-Fi")])            # not link-local or public ones
 
     def test_only_ev3dev_like_ssh_counts_and_nothing_logs_in(self):
-        banners = {"192.168.4.57": "SSH-2.0-OpenSSH_7.4p1 Debian-10+deb9u7",   # ev3dev
+        banners = {"192.168.4.57": "SSH-2.0-OpenSSH_7.4p1 Debian-10+deb9u7",   # ev3dev on Wi-Fi
+                   "192.168.0.1": "SSH-2.0-OpenSSH_7.4p1 Debian-10+deb9u7",    # ev3dev over Bluetooth
                    "192.168.4.1": "SSH-2.0-dropbear_2020.81",                  # a router
                    "192.168.4.41": "SSH-2.0-OpenSSH_9.0p1 Debian-1"}           # this PC itself
-        with mock.patch.object(phone, "lan_addresses", return_value=["192.168.4.41"]), \
-             mock.patch.object(phone, "ssh_banner", side_effect=lambda ip: banners.get(ip)) as banner,              mock.patch.object(phone.socket, "gethostbyaddr", return_value=("ev3krutin.lan", [], [])):
-            found = phone.find_bricks()
-        self.assertEqual(found, [{"ip": "192.168.4.57", "name": "ev3krutin"}])
+        names = {"192.168.4.57": "ev3krutin.lan", "192.168.0.1": "ev3kk"}
+        reports = []
+        with mock.patch.object(phone, "ssh_banner", side_effect=lambda ip: banners.get(ip)) as banner,              mock.patch.object(phone.socket, "gethostbyaddr", side_effect=lambda ip: (names[ip], [], [])):
+            found = phone.find_bricks(report=lambda so_far: reports.append([dict(f) for f in so_far]))
+        self.assertEqual(found, [{"ip": "192.168.0.1", "name": "ev3kk", "via": "Bluetooth / USB"},
+                                 {"ip": "192.168.4.57", "name": "ev3krutin", "via": "Wi-Fi"}])
         asked = [call.args[0] for call in banner.call_args_list]
-        self.assertNotIn("192.168.4.41", asked)   # never probes itself
-        self.assertEqual(len(asked), 1022 - 1)     # a /22 minus this PC
+        self.assertEqual(asked[0], "192.168.0.1")                # the link's brick address first
+        self.assertEqual(reports[0], [{"ip": "192.168.0.1", "name": None, "via": "Bluetooth / USB"}])   # at once
+        self.assertNotIn("192.168.4.41", asked)                  # never probes itself
+        self.assertEqual(len(asked), len(set(asked)))            # nothing twice
+        self.assertEqual(len(asked), (254 - 1) + (1022 - 1))     # the /24 link and the /22 Wi-Fi, minus the PC
+
+    def test_scan_lists_paired_bricks_without_a_network(self):
+        with mock.patch.object(phone.threading, "Thread"):
+            controller = phone.Controller()
+        found = [{"ip": "192.168.4.46", "name": "ev3krutin", "via": "Wi-Fi"}]
+        with mock.patch.object(phone, "find_bricks", return_value=found),              mock.patch.object(phone, "paired_bluetooth_bricks", return_value=["ev3kk", "ev3krutin"]):
+            controller._scan()
+        self.assertEqual(controller.scan, {"running": False, "found": found, "paired": ["ev3kk"], "error": ""})
 
     def test_scan_runs_in_the_background_once(self):
         with mock.patch.object(phone.threading, "Thread"):
@@ -117,9 +139,10 @@ class FindBricksTest(unittest.TestCase):
             controller.start_scan()
             controller.start_scan()   # already running: not started twice
         self.assertEqual(thread.call_count, 1)
-        with mock.patch.object(phone, "find_bricks", return_value=[]):
+        with mock.patch.object(phone, "find_bricks", return_value=[]),              mock.patch.object(phone, "paired_bluetooth_bricks", return_value=[]):
             controller._scan()
-        self.assertEqual(controller.scan, {"running": False, "found": [], "error": "No bricks found on this PC's networks."})
+        self.assertEqual(controller.scan, {"running": False, "found": [], "paired": [],
+                                           "error": "No bricks found on this PC's networks."})
 
 
 if __name__ == "__main__":

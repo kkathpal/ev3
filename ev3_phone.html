@@ -150,7 +150,13 @@
   .checkrow { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; color: var(--muted); }
   .checkrow input { width: 18px; height: 18px; accent-color: var(--accent); }
   .found { display: grid; gap: 6px; margin-top: 10px; }
-  .found button { padding: 10px; text-align: left; font-size: 13px; }
+  .found button { padding: 10px; text-align: left; font-size: 13px; display: flex; gap: 8px; align-items: center; }
+  .found button b { flex: 1; min-width: 0; font-weight: 650; }
+  .found button small { color: var(--muted); font-size: 11px; }
+  .via { font-size: 10px; font-weight: 700; padding: 3px 7px; border-radius: 6px; background: var(--bg); color: var(--accent); }
+  .via.bt { color: var(--violet); }
+  .paired { font-size: 12px; color: var(--muted); background: var(--tile); border-radius: 10px; padding: 10px; }
+  .paired b { color: var(--fg); }
 </style>
 </head>
 <body>
@@ -254,10 +260,10 @@
     <p class="calmsg" id="connMsg"></p>
   </section>
   <section class="card">
-    <span class="caps">Wi-Fi</span>
-    <p class="hint">For Wi-Fi the brick needs a USB Wi-Fi dongle. On the brick: Wireless and Networks → Wi-Fi → pick the
-      same network as this PC. Then search, or type the IP it shows.</p>
-    <button class="setupbtn" id="scanGo">Find bricks on Wi-Fi</button>
+    <span class="caps">Find bricks · Wi-Fi and Bluetooth</span>
+    <p class="hint">Bricks connected to this PC over Bluetooth or USB, and bricks on the same Wi-Fi (the brick needs a USB
+      Wi-Fi dongle: on the brick, Wireless and Networks → Wi-Fi). Tap one to connect.</p>
+    <button class="setupbtn" id="scanGo">Search again</button>
     <p class="calmsg" id="scanMsg"></p>
     <div class="found" id="scanList"></div>
   </section>
@@ -445,6 +451,7 @@ function show(s) {
   last = s;
   if (setupOpen) paintSetup();
   if (connOpen) paintConn();
+  if (!pickedAtStart && s.connection) { pickedAtStart = true; openConn(); }   // every start: pick the brick
   if (!built && s.modes) { maxCm = s.max_cm || maxCm; buildSpeedo(); buildGears(s.modes); window._modes = s.modes; built = true; }
   if (s.mode && s.mode !== mode && !driving()) { mode = s.mode; paintGears(); }
   const ok = s.connected;
@@ -636,12 +643,14 @@ $("calSave").addEventListener("click", async () => {
 });
 
 // ---------- Connection: which brick, over Wi-Fi or by IP address ----------
-let connOpen = false;
+let connOpen = false, pickedAtStart = false;
 
+// Opens on every start of the page (and from the button), and looks for bricks right away
 function openConn() {
   releaseAll();
   connOpen = true;
   const c = last.connection || {};
+  if (!(c.scan && c.scan.running)) post("/scan", {});
   $("connAddr").value = (c.host || "").replace(/\.local$/, "");
   $("connMsg").textContent = "";
   $("connSheet").classList.add("show");
@@ -654,7 +663,8 @@ function paintConn() {
   const c = last.connection; if (!c) return;
   const st = $("connStatus");
   if (last.connected) {
-    st.textContent = `✓ Connected to ${c.host}` + (c.name && c.name + ".local" !== c.host ? ` (${c.name})` : "");
+    st.textContent = `✓ Connected to ${c.host}` + (c.name && c.name + ".local" !== c.host ? ` (${c.name})` : "") +
+                     ". Tap Done to drive, or pick another brick.";
     st.className = "connstatus ok";
   } else {
     st.textContent = last.status || `Connecting to ${c.host}…`;
@@ -662,16 +672,30 @@ function paintConn() {
   }
   const scan = c.scan || {};
   $("scanGo").disabled = !!scan.running;
-  $("scanGo").textContent = scan.running ? "Searching this PC's networks…" : "Find bricks on Wi-Fi";
-  $("scanMsg").textContent = scan.running ? "This takes a few seconds." : (scan.error || "");
-  const list = $("scanList"), found = scan.found || [], key = found.map(f => f.ip + f.name).join();
+  $("scanGo").textContent = scan.running ? "Searching…" : "Search again";
+  $("scanMsg").textContent = scan.running ? "Searching Bluetooth/USB first, then Wi-Fi (a few seconds)…" : (scan.error || "");
+  const list = $("scanList"), found = scan.found || [], paired = scan.paired || [];
+  const key = found.map(f => f.ip + f.name + f.via).join() + "|" + paired.join();
   if (list.dataset.key !== key) {   // rebuild only when the results change
     list.dataset.key = key; list.innerHTML = "";
     for (const f of found) {
-      const b = document.createElement("button");
-      b.textContent = f.name ? `${f.name}  ·  ${f.ip}` : f.ip;
+      const b = document.createElement("button"), name = document.createElement("b"),
+            ip = document.createElement("small"), via = document.createElement("span");
+      name.textContent = f.name || f.ip;
+      ip.textContent = f.name ? f.ip : "";
+      via.className = "via" + (f.via === "Wi-Fi" ? "" : " bt");
+      via.textContent = f.via === "Wi-Fi" ? "Wi-Fi" : "Bluetooth / USB";
+      b.append(via, name, ip);
       b.addEventListener("click", () => { $("connAddr").value = f.ip; connect(); });
       list.append(b);
+    }
+    for (const name of paired) {   // paired, but the Bluetooth network to it isn't connected yet
+      const p = document.createElement("div"); p.className = "paired";
+      p.innerHTML = "<b></b> is paired over Bluetooth, but its Bluetooth network isn't connected yet. " +
+        "On the brick: Wireless and Networks → Tethering → turn on Bluetooth. On this PC: Devices and Printers → " +
+        "right-click <b></b> → Connect using → Access point. Then tap Search again.";
+      p.querySelectorAll("b").forEach(b => b.textContent = name);
+      list.append(p);
     }
   }
 }
