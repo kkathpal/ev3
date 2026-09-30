@@ -85,7 +85,7 @@ Built-in effects are WAVs under `/usr/share/sounds/ev3dev/<group>/`; uploads go 
 widget's `info()` and by `Brick.query_sounds()` after connecting), `play`/`say`/`STOP`/`set_volume`/
 `horn` command strings, and `upload()`. Sound commands go to the same command shell as motor
 commands, so they always run in the background (`( … ) &`) or they would delay driving.
-`Brick.horn()` (H key, HORN button, phone `/horn`) honks at most once per `HORN_GAP`, because a held
+`Brick.horn()` (H key, the HORN on the D-pad and in the Sound card, phone `/horn`) honks at most once per `HORN_GAP`, because a held
 key repeats; the limit is on the PC, not a `pgrep aplay` check on the brick (a player that never
 exited blocked every horn after the first). `ev3_sound.horn()` wraps aplay in `timeout`. In EV3 RC, key events from the Say text box are ignored by the drive
 key handlers, so typing never drives the robot.
