@@ -57,11 +57,15 @@ For the phone, the server picks a random free port (8000–8999) each time, or t
 `python ev3_phone.py --port 8090`. Open the `http://…:<port>` address it prints (the phone must be
 on the same Wi-Fi; allow Python through the firewall if asked).
 
-**Several phones:** more than one phone can open the page, but only one drives at a time. The
-first to move the robot holds the controls; the others show "🔒 Another phone is driving" and
-can drive about a second after it lets go, or tap **Take control** (the robot stops first).
-**STOP** works from every phone. A phone that's locked or switches app only stops the robot if
-it's the one driving.
+**Several phones and bricks:** each phone picks its own brick, so phones can drive different
+bricks at the same time from one PC; picking a brick on one phone doesn't change the others.
+Each brick keeps its own settings (motors, Invert, calibration, drift, gear): this PC's own
+brick uses the desktop app's, and other bricks start from those and are saved separately.
+Phones on the **same** brick share it, and only one drives at a time: the first to move the
+robot holds the controls; the others show "🔒 Another phone is driving" and can drive about a
+second after it lets go, or tap **Take control** (the robot stops first). **STOP** works from
+every phone on that brick. A phone that's locked or switches app only stops the robot if it's
+the one driving. A brick no phone uses any more is let go (motors stopped).
 
 **Picking the brick, from the phone:** every time the phone page opens, it starts on the
 **Connect to the brick** screen and searches for bricks: first ones connected to the PC over
@@ -70,7 +74,7 @@ connected; tap one to connect, or tap **Done** to keep the current brick. You ca
 brick's name (like `ev3kishan`) or its IP address (the brick's screen shows it at the top).
 Bricks that are only *paired* over Bluetooth are listed with the steps to connect their
 Bluetooth network. For Wi-Fi the brick needs a USB Wi-Fi dongle and must be on the same network
-as the PC (on the brick: Wireless and Networks → Wi-Fi). With **Remember on this PC** ticked,
+as the PC (on the brick: Wireless and Networks → Wi-Fi). With **Make this the PC's brick** ticked,
 the desktop app uses that brick too. Open the screen again any time with **📶 Brick · Wi-Fi**
 (below the gears) or **Connect another way…** on the "Waiting for the robot" screen. Each device that answers SSH is logged in to with the brick login in `ev3_config.json`
 (robot / maker by default); only confirmed EV3 bricks are listed, with the name, battery and

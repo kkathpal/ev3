@@ -1,8 +1,13 @@
 """EV3 RC for phones — drive the robot from any phone browser on your Wi-Fi.
 
-This PC keeps the connection to the brick (like ev3_drive.pyw) and serves a touch
+This PC keeps the connection to the bricks (like ev3_drive.pyw) and serves a touch
 controller page to phones on the same Wi-Fi. It drives exactly like the desktop
 app: same gears, Turbo, and calibration (read from ev3_drive_settings.json).
+
+Each phone picks its own brick: phones on different bricks drive them independently,
+and phones on the same brick share it (one drives at a time). This PC's own brick (from
+ev3_config.json) uses the desktop app's settings; other bricks get their own, saved in
+the settings file's "bricks" section.
 
 Run:   python ev3_phone.py               (brick address from ev3_config.json)
        python ev3_phone.py 192.168.0.1   (brick at a specific address)
@@ -54,6 +59,7 @@ PAGE = os.path.join(HERE, "ev3_phone.html")
 PHONE_TIMEOUT = 0.35   # stop if the driving phone sends nothing for this long (s)
 DRIVER_IDLE = 1.0      # one phone drives at a time: another may take over once it's sent nothing for this long (s)
 DIRECTIONS = {"up", "down", "left", "right"}
+REAP_AFTER = 120       # let go of a brick (motors stopped) once no phone has used it for this long (s)
 
 
 def parse_stick(value):
@@ -67,10 +73,14 @@ def parse_stick(value):
 
 
 class Controller:
-    """Owns the brick connection; turns the phone's joystick (or held keys) into drive pulses."""
+    """One brick: owns its connection and turns the joystick (or held keys) of the phones that
+    picked it into drive pulses. The Hub keeps one per brick in use."""
 
-    def __init__(self):
+    def __init__(self, host=None):
+        self.host = host or rc.HOST
         self.brick = rc.Brick()
+        self.brick.host = self.host
+        self.stop_event = threading.Event()   # set by shutdown(): ends the monitor and safety threads
         self.lock = threading.Lock()
         self.settings, self.settings_mtime = {}, None
         self._reload_settings()
@@ -87,22 +97,47 @@ class Controller:
         self.trip_cm = self.top_speed = 0.0
         self.last_pos = None
         self.telemetry = {}
-        self.brick_host = rc.HOST   # the address the current connection was made to
         self.driver = None          # the phone holding the controls (its page's random id)
         self.driver_seen = 0.0      # when it last sent input that moves the robot
-        self.search = ev3_find.BrickSearch((rc.USER, rc.PASSWORD))   # Find bricks (Bluetooth/USB and Wi-Fi)
         threading.Thread(target=self._monitor, daemon=True).start()
         threading.Thread(target=self._safety, daemon=True).start()
 
-    # ----- settings shared with the desktop app -----
+    # ----- settings: this PC's own brick shares the desktop app's; other bricks have their own -----
+    def _own(self):
+        """This PC's own brick (ev3_config.json), whose settings the desktop app uses too."""
+        name = self.brick.name
+        return self.host == rc.HOST or bool(name and f"{name}.local" == rc.HOST)
+
+    def _key(self):
+        """Where another brick's settings live in the file's "bricks" section: its own name
+        (the same whether reached over Bluetooth or Wi-Fi), or its address until connected."""
+        return self.brick.name or self.host
+
     def _reload_settings(self):
-        """Pick up calibration changes made in ev3_drive.pyw while this runs."""
+        """Pick up calibration changes made in ev3_drive.pyw (or another phone) while this runs."""
         try:
             mtime = os.path.getmtime(rc.SETTINGS_FILE)
         except OSError:
             mtime = None
         if mtime != self.settings_mtime:
-            self.settings, self.settings_mtime = rc.load_settings(), mtime
+            file = rc.load_settings()
+            top = {k: v for k, v in file.items() if k != "bricks"}
+            if self._own():
+                self.settings = top
+            else:   # start from this PC's settings (gear, acceleration...) until calibrated
+                self.settings = {**top, **file.get("bricks", {}).get(self._key(), {})}
+            self.settings_mtime = mtime
+
+    def _write(self, changes):
+        """Save setting changes for this brick (call with the lock held)."""
+        if self._own():
+            rc.save_settings({**self.settings, **changes})
+        else:
+            file = rc.load_settings()
+            bricks = dict(file.get("bricks", {}))
+            bricks[self._key()] = {**bricks.get(self._key(), {}), **changes}
+            rc.save_settings({**file, "bricks": bricks})
+        self.settings_mtime = None   # re-read now
 
     def _ports(self):
         s = self.settings
@@ -199,8 +234,7 @@ class Controller:
     def set_mode(self, mode):
         self.mode = mode
         self._reload_settings()
-        rc.save_settings({**self.settings, "mode": mode})   # desktop app opens in the same gear
-        self.settings_mtime = None
+        self._write({"mode": mode})   # this brick opens in the same gear next time
 
     def reset_trip(self):
         self.trip_cm = self.top_speed = 0.0
@@ -229,8 +263,7 @@ class Controller:
         """Stop, then save setting changes (call with the lock held)."""
         self.stop()
         self._reload_settings()
-        rc.save_settings({**self.settings, **changes})
-        self.settings_mtime = None   # re-read now
+        self._write(changes)
 
     def update_setup(self, data):
         """Motors, Invert, Drift fix or Acceleration changed on the phone."""
@@ -279,7 +312,7 @@ class Controller:
 
     def _safety(self):
         """Stop the robot if the phone that's driving goes quiet (Wi-Fi drop, app switch...)."""
-        while True:
+        while not self.stop_event.is_set():
             time.sleep(0.05)
             with self.lock:
                 if self.moving and time.monotonic() - self.last_command > PHONE_TIMEOUT:
@@ -287,14 +320,12 @@ class Controller:
 
     # ----- telemetry -----
     def _monitor(self):
-        while True:
+        while not self.stop_event.is_set():
             try:
-                if self.brick.connected and self.brick_host != rc.HOST:
-                    self.brick.close()   # the phone picked another brick: stop this one and let it go
                 if not self.brick.connected:
-                    self.status = f"Connecting to {rc.HOST}…"
-                    self.brick_host = rc.HOST
+                    self.status = f"Connecting to {self.host}…"
                     self.brick.connect()
+                    self.settings_mtime = None   # now its name is known: its own settings
                 self.readings = self.brick.read_motors()
                 self._check_ports()
                 self.status = "Connected"
@@ -307,11 +338,20 @@ class Controller:
             except Exception as e:
                 self.brick.ctl = None
                 self.brick.rtt = None
-                self.status = f"Can't reach {rc.HOST}: {e}"
+                self.status = f"Can't reach {self.host}: {e}"
                 self._update_telemetry()
                 time.sleep(2)
                 continue
             time.sleep(rc.MONITOR_SECONDS)
+        if self.brick.connected:   # shut down while connecting: let that connection go too
+            self.brick.close()
+
+    def shutdown(self):
+        """No phone uses this brick any more: stop its motors and let it go."""
+        self.stop_event.set()
+        with self.lock:
+            self.stop()
+        self.brick.close()
 
     def _update_telemetry(self):
         self._reload_settings()
@@ -358,35 +398,10 @@ class Controller:
             "warning": warning,
         }
 
-    # ----- which brick (the phone's Connection screen) -----
-    def connect_to(self, address, remember=False):
-        """Switch to another brick by name or IP address (e.g. its Wi-Fi address). The monitor
-        then stops the old one's motors, lets it go and connects. Returns an error, or ""."""
-        host = rc.ev3_config.parse_address(address)
-        if not host:
-            return "Type the brick's name (like ev3kishan) or its IP address (like 192.168.1.23)."
-        with self.lock:
-            self.stop()
-            rc.HOST = host
-            self.status = f"Connecting to {host}…"
-            self.trip_cm = self.top_speed = 0.0
-            self.last_pos = None
-            self.telemetry = {**self.telemetry, "connected": False, "status": self.status}
-        if remember:
-            try:
-                rc.ev3_config.save_host(host)   # the desktop app and the next run use it too
-            except OSError as e:
-                return f"Connecting, but couldn't remember it: {e.strerror or e}"
-        return ""
-
-    def start_scan(self):
-        self.search.start()
-
     def _connection_state(self):
         connected = self.brick.connected and self.status == "Connected"
-        return {"host": rc.HOST, "name": self.brick.name if connected else None,
-                "ip": self.brick.address if connected else None,
-                "saved": rc.ev3_config.saved_host(), "scan": self.search.state}
+        return {"host": self.host, "name": self.brick.name if connected else None,
+                "ip": self.brick.address if connected else None}
 
     def state(self, client=None):
         with self.lock:
@@ -397,7 +412,88 @@ class Controller:
                 "control": control}
 
 
-controller = None
+class Hub:
+    """The bricks this server drives: one Controller per brick a phone has picked, and which
+    brick each phone drives. Phones on different bricks drive them independently; phones on
+    the same brick share it (one drives at a time). New phones start on this PC's brick."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.controllers = {}   # host -> Controller
+        self.picked = {}        # phone id -> host
+        self.seen = {}          # phone id -> when it last asked for anything (time.monotonic)
+        self.default = rc.HOST  # where a phone starts: this PC's brick (ev3_config.json)
+        self.search = ev3_find.BrickSearch((rc.USER, rc.PASSWORD))   # Find bricks, for every phone
+        threading.Thread(target=self._reap_loop, daemon=True).start()
+
+    def _get(self, host):
+        """This brick's Controller, connecting to it if it's new (call with the lock held)."""
+        if host not in self.controllers:
+            self.controllers[host] = Controller(host)
+        return self.controllers[host]
+
+    def controller(self, client):
+        """The Controller of the brick this phone picked (this PC's brick until it picks one)."""
+        with self.lock:
+            if client:
+                self.seen[client] = time.monotonic()
+            return self._get(self.picked.get(client, self.default))
+
+    def select(self, client, address, remember=False):
+        """This phone picks a brick (name or IP address). Other phones keep theirs. Returns an
+        error, or ""."""
+        host = rc.ev3_config.parse_address(address)
+        if not host:
+            return "Type the brick's name (like ev3kishan) or its IP address (like 192.168.1.23)."
+        with self.lock:
+            old = self.controllers.get(self.picked.get(client, self.default))
+            if client:
+                self.picked[client], self.seen[client] = host, time.monotonic()
+            else:
+                self.default = host   # a page without an id: it can only follow the default
+            if old is not None and old.host != host and old.driver == client:
+                with old.lock:
+                    old.stop()   # stop what this phone was driving before it moves on
+            self._get(host)
+            self._release_unused()
+        if remember:
+            self.default = host   # new phones start on it; so does the desktop app and the next run
+            try:
+                rc.ev3_config.save_host(host)
+            except OSError as e:
+                return f"Connecting, but couldn't remember it: {e.strerror or e}"
+        return ""
+
+    def _release_unused(self, now=None):
+        """Let go of bricks no phone has used for REAP_AFTER, and forget those phones (call
+        with the lock held). This PC's brick is always kept: new phones start there."""
+        now = time.monotonic() if now is None else now
+        for client in [c for c, t in self.seen.items() if now - t > REAP_AFTER]:
+            self.seen.pop(client, None)
+            self.picked.pop(client, None)
+        in_use = set(self.picked.values()) | {self.default}
+        for host in [h for h in self.controllers if h not in in_use]:
+            self.controllers.pop(host).shutdown()
+
+    def _reap_loop(self):
+        while True:
+            time.sleep(5)
+            with self.lock:
+                self._release_unused()
+
+    def state(self, client=None):
+        state = self.controller(client).state(client)
+        state["connection"].update(saved=rc.ev3_config.saved_host(), scan=self.search.state)
+        return state
+
+    def close(self):
+        with self.lock:
+            for controller in self.controllers.values():
+                controller.shutdown()
+            self.controllers.clear()
+
+
+hub = None
 
 
 class Server(ThreadingHTTPServer):
@@ -435,7 +531,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif self.path.partition("?")[0] == "/state":
             query = parse_qs(self.path.partition("?")[2])
-            self._json(controller.state(client_id(query.get("c", [None])[0])))
+            self._json(hub.state(client_id(query.get("c", [None])[0])))
         else:
             self.send_error(404)
 
@@ -446,6 +542,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self._json({"error": "bad json"}, 400)
         client = client_id(data.get("client"))
+        controller = hub.controller(client)   # the brick this phone picked
         if self.path == "/drive":
             controller.drive(data.get("held", []), data.get("mode"), data.get("stick"), client)
         elif self.path == "/stop":
@@ -468,16 +565,16 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/cal/test":
             controller.cal_test(data.get("arrow"), client)
         elif self.path == "/connect":
-            error = controller.connect_to(data.get("address"), data.get("remember") is True)
-            return self._json({**controller.state(client), "error": error})
+            error = hub.select(client, data.get("address"), data.get("remember") is True)
+            return self._json({**hub.state(client), "error": error})
         elif self.path == "/scan":
-            controller.start_scan()
+            hub.search.start()
         elif self.path == "/cal/save":
             error = controller.save_calibration(data.get("choice"))
-            return self._json({**controller.state(client), "saved": not error, "error": error})
+            return self._json({**hub.state(client), "saved": not error, "error": error})
         else:
             return self.send_error(404)
-        self._json(controller.state(client))
+        self._json(hub.state(client))
 
     def log_message(self, *args):   # keep the console quiet (10 requests a second)
         pass
@@ -511,12 +608,12 @@ def start_server(wanted=None):
 
 
 def main():
-    global controller
+    global hub
     server = start_server(PORT_ARG)
     port = server.server_address[1]
-    controller = Controller()
+    hub = Hub()
     print("\nEV3 RC phone controller")
-    print(f"  brick: {rc.HOST}")
+    print(f"  this PC's brick: {rc.HOST} (each phone can pick its own)")
     for ip in lan_addresses():
         print(f"  open on your phone:  http://{ip}:{port}")
     print("  (phone must be on the same Wi-Fi; allow Python through the firewall if asked)")
@@ -527,9 +624,7 @@ def main():
         pass
     finally:
         print("stopping…")
-        with controller.lock:
-            controller.stop()
-        controller.brick.close()
+        hub.close()
 
 
 if __name__ == "__main__":
