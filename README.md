@@ -123,11 +123,13 @@ motors the brick reports, and the one connected now is marked **Connected**.
 | P | play the sound picked in the Sound card |
 | Space | stop hard |
 
-On the phone, drive with the joystick: push it in any direction to go. How far you push sets the
-speed, up to the selected gear's top speed at the rim; the direction steers: straight up is
-forward, sideways spins in place, a diagonal curves like ↑ + →, and every angle in between curves
-smoothly. Let go to stop. **STOP** and **HORN** sit under it, and the gears still set the top
-speed. If you open the phone page in a desktop browser, the arrow keys work there too.
+On the phone, drive with two sticks like a game controller: the **left stick** goes forward and
+back, the **right stick** goes left and right (each only moves along its own line). Use both thumbs
+together: how far you push sets the speed, up to the selected gear's top speed at the rim; the right
+stick alone spins in place, both together curve like ↑ + →, and every mix in between curves
+smoothly. Let go to stop. **STOP** and **HORN** sit under them, and the gears still set the top
+speed. Hold the phone sideways for a handheld layout: a stick under each thumb at the left and right
+edges, and the speedometer, gears, STOP and HORN between them. If you open the phone page in a desktop browser, the arrow keys work there too.
 
 First time with a robot: in the **Setup** card press **Calibrate…**. Hold each arrow key (or its
 **Test** button); the robot moves slowly while you hold it. Click what it actually did (Forward,
