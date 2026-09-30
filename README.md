@@ -57,6 +57,12 @@ For the phone, the server picks a random free port (8000–8999) each time, or t
 `python ev3_phone.py --port 8090`. Open the `http://…:<port>` address it prints (the phone must be
 on the same Wi-Fi; allow Python through the firewall if asked).
 
+**Several phones:** more than one phone can open the page, but only one drives at a time. The
+first to move the robot holds the controls; the others show "🔒 Another phone is driving" and
+can drive about a second after it lets go, or tap **Take control** (the robot stops first).
+**STOP** works from every phone. A phone that's locked or switches app only stops the robot if
+it's the one driving.
+
 **Picking the brick, from the phone:** every time the phone page opens, it starts on the
 **Connect to the brick** screen and searches for bricks: first ones connected to the PC over
 **Bluetooth or USB**, then ones on the same **Wi-Fi**. Each is labelled with how it's

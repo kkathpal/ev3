@@ -67,6 +67,12 @@
   .small { padding: 7px 12px; font-size: 12px; }
 
   .pad { width: min(100%, 300px, 34vh); margin: 0 auto; touch-action: none; }
+  .pad.locked .stick { opacity: .35; }
+  .lock { display: none; align-items: center; gap: 10px; margin-bottom: 10px; padding: 10px 12px; border-radius: 10px;
+    background: #ffb54722; color: var(--warn); font-size: 13px; }
+  .lock.show { display: flex; }
+  .lock span { flex: 1; }
+  .lock button { padding: 7px 10px; font-size: 12px; font-weight: 700; flex: none; }
   /* Joystick: the knob follows the thumb up to STICK_TRAVEL of the width from the centre */
   .stick { position: relative; width: 100%; aspect-ratio: 1; border-radius: 50%; touch-action: none;
     background: radial-gradient(circle closest-side, var(--tile) 0 66%, var(--card) 67% 100%);
@@ -194,6 +200,8 @@
   </section>
 
   <section class="card">
+    <div class="lock" id="lock"><span>🔒 Another phone is driving. You can drive when it stops.</span>
+      <button id="takeOver">Take control</button></div>
     <div class="pad" id="pad">
       <div class="stick" id="stick" aria-label="joystick: drag to drive">
         <svg viewBox="0 0 100 100">
@@ -278,6 +286,8 @@
 <script>
 const GEAR_COLORS = { Slow: "#3ddc97", Normal: "#5aa9ff", Fast: "#ffb547", Turbo: "#ff4fd8" };
 const $ = id => document.getElementById(id);
+// This page's own id, so the PC can tell phones apart: one phone drives at a time
+const CLIENT = (Math.random().toString(36).slice(2) + Date.now().toString(36)).slice(0, 24);
 const STICK_TRAVEL = 0.33;         // knob centre's reach, as a share of the joystick's width (= full speed)
 const SEND_GAP_MS = 90;            // stick moves go to the PC at most this often (the brick is slow)
 const held = new Set();            // arrow keys held (keyboard, e.g. testing in a desktop browser)
@@ -386,13 +396,16 @@ function recompute() {
   held.clear(); keys.forEach(d => held.add(d));
   if ([...held].sort().join() !== before) send(true);   // react instantly, don't wait for the tick
 }
-function releaseAll() { hardStop = true; calStop(); releaseStick(); keys.clear(); held.clear(); post("/stop", {}); }
-$("stop").addEventListener("pointerdown", e => { e.preventDefault(); releaseAll(); });
+function releaseAll(explicit = false) {
+  hardStop = true; calStop(); releaseStick(); keys.clear(); held.clear(); post("/stop", { explicit });
+}
+$("stop").addEventListener("pointerdown", e => { e.preventDefault(); releaseAll(true); });
+$("takeOver").addEventListener("click", () => post("/takeover", {}));
 $("reset").addEventListener("click", () => post("/reset", {}));
 $("horn").addEventListener("pointerdown", e => { e.preventDefault(); post("/horn", {}); });
 document.addEventListener("contextmenu", e => e.preventDefault());
-document.addEventListener("visibilitychange", () => { if (document.hidden) releaseAll(); });
-window.addEventListener("blur", releaseAll);
+document.addEventListener("visibilitychange", () => { if (document.hidden) releaseAll(); });   // not explicit either
+window.addEventListener("blur", () => releaseAll());   // not an explicit STOP
 
 // keyboard too (handy when testing in a desktop browser)
 const keys = new Set();
@@ -400,7 +413,7 @@ const KEYMAP = { ArrowUp: "up", w: "up", ArrowDown: "down", s: "down", ArrowLeft
 addEventListener("keydown", e => {
   if (setupOpen || connOpen) return;   // the Setup or Connection screen is open: keys don't drive
   if (KEYMAP[e.key]) { e.preventDefault(); hardStop = false; keys.add(KEYMAP[e.key]); recompute(); }
-  else if (e.key === " ") releaseAll();
+  else if (e.key === " ") releaseAll(true);
   else if (e.key === "h" && !e.repeat) post("/horn", {});
   else if ("1234".includes(e.key) && e.key && window._modes) setMode(window._modes[+e.key - 1].name);
 });
@@ -410,7 +423,8 @@ addEventListener("keyup", e => { if (KEYMAP[e.key]) { keys.delete(KEYMAP[e.key])
 async function post(path, body) {
   const t0 = performance.now();
   try {
-    const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ ...body, client: CLIENT }) });
     phoneMs = performance.now() - t0; failures = 0;
     show(await r.json());
   } catch (e) { fail(); }
@@ -429,7 +443,7 @@ async function send(force) {
 async function poll() {
   const t0 = performance.now();
   try {
-    const r = await fetch("/state", { cache: "no-store" });
+    const r = await fetch("/state?c=" + CLIENT, { cache: "no-store" });
     phoneMs = performance.now() - t0; failures = 0;
     show(await r.json());
   } catch (e) { fail(); }
@@ -459,6 +473,9 @@ function show(s) {
   if (s.mode && s.mode !== mode && !driving()) { mode = s.mode; paintGears(); }
   const ok = s.connected;
   $("overlay").classList.toggle("show", !ok);
+  const locked = s.control === "other";   // another phone holds the controls
+  $("lock").classList.toggle("show", locked);
+  $("pad").classList.toggle("locked", locked);
   if (!ok) { $("ovTitle").textContent = "Waiting for the robot"; $("ovText").textContent = s.status || "Connecting to the brick…"; }
   $("ovConn").hidden = ok;
   $("dot").style.background = ok ? "var(--good)" : "var(--warn)";
@@ -630,7 +647,7 @@ $("calSave").addEventListener("click", async () => {
   if (calReason()) return;
   calStop();
   try {
-    const r = await fetch("/cal/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ choice }) });
+    const r = await fetch("/cal/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ choice, client: CLIENT }) });
     const s = await r.json();
     show(s);
     const msg = $("calMsg");
@@ -718,7 +735,7 @@ async function connect() {
   if (!address) { msg.textContent = "Type the brick's name or IP address."; msg.className = "calmsg bad"; return; }
   try {
     const r = await fetch("/connect", { method: "POST", headers: { "Content-Type": "application/json" },
-                                        body: JSON.stringify({ address, remember: $("connRemember").checked }) });
+                                        body: JSON.stringify({ address, remember: $("connRemember").checked, client: CLIENT }) });
     const s = await r.json();
     show(s);
     msg.textContent = s.error || `Connecting to ${s.connection.host}… (it can take up to 10 seconds)`;

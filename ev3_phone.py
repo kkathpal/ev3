@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs
 from importlib.machinery import SourceFileLoader
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -51,6 +52,7 @@ from ev3_find import lan_addresses   # noqa: E402
 PORT_RANGE = (8000, 8999)   # each run uses a random free port from here (--port N picks one)
 PAGE = os.path.join(HERE, "ev3_phone.html")
 PHONE_TIMEOUT = 0.35   # stop if the driving phone sends nothing for this long (s)
+DRIVER_IDLE = 1.0      # one phone drives at a time: another may take over once it's sent nothing for this long (s)
 DIRECTIONS = {"up", "down", "left", "right"}
 
 
@@ -86,6 +88,8 @@ class Controller:
         self.last_pos = None
         self.telemetry = {}
         self.brick_host = rc.HOST   # the address the current connection was made to
+        self.driver = None          # the phone holding the controls (its page's random id)
+        self.driver_seen = 0.0      # when it last sent input that moves the robot
         self.search = ev3_find.BrickSearch((rc.USER, rc.PASSWORD))   # Find bricks (Bluetooth/USB and Wi-Fi)
         threading.Thread(target=self._monitor, daemon=True).start()
         threading.Thread(target=self._safety, daemon=True).start()
@@ -123,14 +127,50 @@ class Controller:
         return (self.settings.get("invert_left", legacy), self.settings.get("invert_right", legacy))
 
     # ----- driving -----
-    def drive(self, held, mode=None, stick=None):
+    def _claim(self, client, moving):
+        """One phone drives at a time, so two phones on this page can't fight over the robot.
+        True if `client` may drive now: nobody holds the controls (none yet, or the holder has
+        sent nothing that moves the robot for DRIVER_IDLE), or it holds them. Moving input
+        (`moving`) claims them. Call with the lock held."""
+        now = time.monotonic()
+        if self.driver not in (None, client) and now - self.driver_seen < DRIVER_IDLE:
+            return False
+        if moving:
+            self.driver, self.driver_seen = client, now
+        return True
+
+    def control(self, client):
+        """For the page: "you" (holds the controls), "other" (another phone does) or "free"."""
+        if self.driver is None or time.monotonic() - self.driver_seen >= DRIVER_IDLE:
+            return "free"
+        return "you" if self.driver == client else "other"
+
+    def take_over(self, client):
+        """Take the controls from another phone on purpose: stop the robot, then hold them."""
         with self.lock:
+            self.stop()
+            self.driver, self.driver_seen = client, time.monotonic()
+
+    def request_stop(self, client, explicit=False):
+        """The STOP button (explicit) stops the robot from any phone, for safety. A phone just
+        going away (locked, switched app) only stops it if that phone is the one driving."""
+        with self.lock:
+            if explicit or self._claim(client, False):
+                self.stop()
+
+    def drive(self, held, mode=None, stick=None, client=None):
+        with self.lock:
+            moving = parse_stick(stick) is not None or (
+                isinstance(held, list) and any(d in DIRECTIONS for d in held))
+            if not self._claim(client, moving):
+                return False   # another phone is driving: ignore this one
             if mode in dict(rc.MODES) and mode != self.mode:
                 self.set_mode(mode)
             self.stick = parse_stick(stick)
             self.held = {d for d in held if d in DIRECTIONS} if isinstance(held, list) else set()
             self.last_command = time.monotonic()
             self._send()
+            return True
 
     def _send(self):
         self._reload_settings()
@@ -166,10 +206,12 @@ class Controller:
         self.trip_cm = self.top_speed = 0.0
 
     # ----- Setup · Calibrate from the phone (same as the desktop's Setup card) -----
-    def cal_test(self, arrow):
+    def cal_test(self, arrow, client=None):
         """Calibrate by driving: run the picked motors in CAL_PATTERNS[arrow] (no Invert, slow
         TEST_SPEED timed pulses) while the phone keeps re-sending it; _safety stops it after."""
         with self.lock:
+            if not self._claim(client, arrow in rc.CAL_PATTERNS):
+                return   # another phone is driving
             self.held = set()
             self.stick = None
             self.last_command = time.monotonic()
@@ -346,11 +388,13 @@ class Controller:
                 "ip": self.brick.address if connected else None,
                 "saved": rc.ev3_config.saved_host(), "scan": self.search.state}
 
-    def state(self):
+    def state(self, client=None):
         with self.lock:
             self._reload_settings()
             setup = self._setup_state()
-        return {**self.telemetry, "mode": self.mode, "setup": setup, "connection": self._connection_state()}
+            control = self.control(client)
+        return {**self.telemetry, "mode": self.mode, "setup": setup, "connection": self._connection_state(),
+                "control": control}
 
 
 controller = None
@@ -389,8 +433,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-        elif self.path == "/state":
-            self._json(controller.state())
+        elif self.path.partition("?")[0] == "/state":
+            query = parse_qs(self.path.partition("?")[2])
+            self._json(controller.state(client_id(query.get("c", [None])[0])))
         else:
             self.send_error(404)
 
@@ -400,14 +445,16 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(length) or b"{}")
         except ValueError:
             return self._json({"error": "bad json"}, 400)
+        client = client_id(data.get("client"))
         if self.path == "/drive":
-            controller.drive(data.get("held", []), data.get("mode"), data.get("stick"))
+            controller.drive(data.get("held", []), data.get("mode"), data.get("stick"), client)
         elif self.path == "/stop":
-            with controller.lock:
-                controller.stop()
+            controller.request_stop(client, data.get("explicit") is True)
+        elif self.path == "/takeover":
+            controller.take_over(client)
         elif self.path == "/mode":
             with controller.lock:
-                if data.get("mode") in dict(rc.MODES):
+                if data.get("mode") in dict(rc.MODES) and controller._claim(client, False):
                     controller.set_mode(data["mode"])
                     if controller.held or controller.stick:
                         controller._send()
@@ -419,21 +466,28 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/setup":
             controller.update_setup(data)
         elif self.path == "/cal/test":
-            controller.cal_test(data.get("arrow"))
+            controller.cal_test(data.get("arrow"), client)
         elif self.path == "/connect":
             error = controller.connect_to(data.get("address"), data.get("remember") is True)
-            return self._json({**controller.state(), "error": error})
+            return self._json({**controller.state(client), "error": error})
         elif self.path == "/scan":
             controller.start_scan()
         elif self.path == "/cal/save":
             error = controller.save_calibration(data.get("choice"))
-            return self._json({**controller.state(), "saved": not error, "error": error})
+            return self._json({**controller.state(client), "saved": not error, "error": error})
         else:
             return self.send_error(404)
-        self._json(controller.state())
+        self._json(controller.state(client))
 
     def log_message(self, *args):   # keep the console quiet (10 requests a second)
         pass
+
+
+def client_id(value):
+    """A phone page's random id as sent (letters, digits, dashes; at most 64), or None."""
+    if isinstance(value, str) and 0 < len(value) <= 64 and all(c.isalnum() or c == "-" for c in value):
+        return value
+    return None
 
 
 def start_server(wanted=None):
