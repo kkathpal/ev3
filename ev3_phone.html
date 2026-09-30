@@ -152,7 +152,9 @@
   .found { display: grid; gap: 6px; margin-top: 10px; }
   .found button { padding: 10px; text-align: left; font-size: 13px; display: flex; gap: 8px; align-items: center; }
   .found button b { flex: 1; min-width: 0; font-weight: 650; }
-  .found button small { color: var(--muted); font-size: 11px; }
+  .found button small { color: var(--muted); font-size: 11px; text-align: right; line-height: 1.35; }
+  .found button.current { box-shadow: inset 0 0 0 1px var(--good); }
+  .found .now { color: var(--good); font-weight: 700; }
   .via { font-size: 10px; font-weight: 700; padding: 3px 7px; border-radius: 6px; background: var(--bg); color: var(--accent); }
   .via.bt { color: var(--violet); }
   .paired { font-size: 12px; color: var(--muted); background: var(--tile); border-radius: 10px; padding: 10px; }
@@ -261,8 +263,9 @@
   </section>
   <section class="card">
     <span class="caps">Find bricks · Wi-Fi and Bluetooth</span>
-    <p class="hint">Bricks connected to this PC over Bluetooth or USB, and bricks on the same Wi-Fi (the brick needs a USB
-      Wi-Fi dongle: on the brick, Wireless and Networks → Wi-Fi). Tap one to connect.</p>
+    <p class="hint">Bricks linked to this PC over Bluetooth or USB, and bricks on the same Wi-Fi (the brick needs a USB
+      Wi-Fi dongle: on the brick, Wireless and Networks → Wi-Fi). Each is checked by logging in with the brick login
+      (robot / maker). Tap one to connect.</p>
     <button class="setupbtn" id="scanGo">Search again</button>
     <p class="calmsg" id="scanMsg"></p>
     <div class="found" id="scanList"></div>
@@ -673,19 +676,29 @@ function paintConn() {
   const scan = c.scan || {};
   $("scanGo").disabled = !!scan.running;
   $("scanGo").textContent = scan.running ? "Searching…" : "Search again";
-  $("scanMsg").textContent = scan.running ? "Searching Bluetooth/USB first, then Wi-Fi (a few seconds)…" : (scan.error || "");
+  $("scanMsg").textContent = scan.running ? "Searching Bluetooth/USB first, then Wi-Fi, and checking each brick (about 15 seconds)…" : (scan.error || "");
   const list = $("scanList"), found = scan.found || [], paired = scan.paired || [];
-  const key = found.map(f => f.ip + f.name + f.via).join() + "|" + paired.join();
+  const now = last.connected ? c.ip : null;   // the brick connected right now
+  const key = found.map(f => [f.ip, f.name, f.via, f.battery, (f.motors || []).join("")].join("/")).join() +
+              "|" + paired.join() + "|" + now;
   if (list.dataset.key !== key) {   // rebuild only when the results change
     list.dataset.key = key; list.innerHTML = "";
     for (const f of found) {
       const b = document.createElement("button"), name = document.createElement("b"),
-            ip = document.createElement("small"), via = document.createElement("span");
+            info = document.createElement("small"), via = document.createElement("span");
+      const motors = (f.motors || []).map(m => m.replace(/^out/, "")).join(" ");
       name.textContent = f.name || f.ip;
-      ip.textContent = f.name ? f.ip : "";
+      info.innerHTML = "<span></span><br>";
+      info.firstChild.textContent = f.ip;
+      info.append(`${f.battery} V · motors ${motors || "none"}`);
+      if (f.ip === now) {
+        b.className = "current";
+        const mark = document.createElement("span"); mark.className = "now"; mark.textContent = "Connected";
+        name.append(document.createElement("br"), mark);
+      }
       via.className = "via" + (f.via === "Wi-Fi" ? "" : " bt");
       via.textContent = f.via === "Wi-Fi" ? "Wi-Fi" : "Bluetooth / USB";
-      b.append(via, name, ip);
+      b.append(via, name, info);
       b.addEventListener("click", () => { $("connAddr").value = f.ip; connect(); });
       list.append(b);
     }

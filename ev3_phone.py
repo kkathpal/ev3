@@ -86,7 +86,7 @@ class Controller:
         self.last_pos = None
         self.telemetry = {}
         self.brick_host = rc.HOST   # the address the current connection was made to
-        self.search = ev3_find.BrickSearch()   # Find bricks (Bluetooth/USB and Wi-Fi)
+        self.search = ev3_find.BrickSearch((rc.USER, rc.PASSWORD))   # Find bricks (Bluetooth/USB and Wi-Fi)
         threading.Thread(target=self._monitor, daemon=True).start()
         threading.Thread(target=self._safety, daemon=True).start()
 
@@ -343,6 +343,7 @@ class Controller:
     def _connection_state(self):
         connected = self.brick.connected and self.status == "Connected"
         return {"host": rc.HOST, "name": self.brick.name if connected else None,
+                "ip": self.brick.address if connected else None,
                 "saved": rc.ev3_config.saved_host(), "scan": self.search.state}
 
     def state(self):

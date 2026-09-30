@@ -2,10 +2,10 @@
 controller (ev3_phone.py).
 
 find_bricks() looks on this PC's networks: first Bluetooth/USB links to a brick, then the Wi-Fi.
-It only reads each device's SSH greeting (ev3dev's is Debian's OpenSSH) and never logs in, so the
-brick's password goes nowhere until one is picked. paired_bluetooth_bricks() lists bricks paired over
-Bluetooth whose Bluetooth network isn't connected yet (Windows). BrickSearch runs both in the
-background for a UI to show.
+Each device that answers SSH (OpenSSH, as on ev3dev) is logged in to with the brick login from
+ev3_config.json (robot / maker by default) and kept only if it's an EV3 brick; the brick then tells
+its own name, battery and motors. paired_bluetooth_bricks() lists bricks paired over Bluetooth whose
+Bluetooth network isn't connected yet (Windows). BrickSearch runs both in the background for a UI.
 """
 import ipaddress
 import socket
@@ -18,6 +18,16 @@ SCAN_PREFIX = 22       # search this size of network around the PC's Wi-Fi addre
 LINK_PREFIX = 24       # ...and around a Bluetooth/USB link to a brick (a small network)
 SCAN_TIMEOUT = 0.4     # ...waiting this long (s) for each address to answer
 PAIRED_TIMEOUT = 20    # give up on the list of paired Bluetooth devices after this (s)
+LOGIN_TIMEOUT = 6      # give up logging in to a device after this (s)
+
+# Run on each device logged in to: an EV3 has the EV3 battery; also its name and motors
+IDENTIFY = r"""
+b=/sys/class/power_supply/lego-ev3-battery
+[ -d $b ] || { echo not-ev3; exit; }
+read v < $b/voltage_now; echo "battery $v"
+echo "name $(hostname)"
+for m in /sys/class/tacho-motor/motor*; do [ -d "$m" ] && read a < $m/address && echo "motor ${a##*:}"; done
+"""
 
 
 def lan_addresses(brick_link=False):
@@ -78,10 +88,40 @@ def ssh_banner(ip):
         return None
 
 
-def find_bricks(report=None):
-    """Bricks on this PC's networks: devices whose SSH greets like ev3dev's (Debian's OpenSSH),
-    as [{"ip", "name", "via"}]. Only the greeting is read, so the brick's password goes nowhere
-    until one is picked. `report(found_so_far)` is called after each network."""
+def identify(ip, user, password):
+    """Log in to `ip` with the brick login. Returns {"name", "battery" (volts), "motors"} if it's
+    an EV3 brick, or None (not an EV3, wrong login, no answer)."""
+    import paramiko   # only needed here; the rest of this module is the standard library
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        client.connect(ip, username=user, password=password, timeout=LOGIN_TIMEOUT,
+                       banner_timeout=LOGIN_TIMEOUT, auth_timeout=LOGIN_TIMEOUT,
+                       look_for_keys=False, allow_agent=False)
+        _, out, _ = client.exec_command(IDENTIFY, timeout=LOGIN_TIMEOUT)
+        text = out.read().decode(errors="replace")
+    except Exception:
+        return None
+    finally:
+        client.close()
+    brick = {"name": None, "battery": None, "motors": []}
+    for line in text.splitlines():
+        key, _, value = line.partition(" ")
+        if key == "not-ev3":
+            return None
+        if key == "battery" and value.strip().isdigit():
+            brick["battery"] = round(int(value) / 1e6, 1)
+        elif key == "name":
+            brick["name"] = value.strip() or None
+        elif key == "motor":
+            brick["motors"].append(value.strip())
+    return brick if brick["battery"] is not None else None
+
+
+def find_bricks(report=None, user="robot", password="maker"):
+    """EV3 bricks on this PC's networks, as [{"ip", "via", "name", "battery", "motors"}]: every
+    device answering SSH (OpenSSH) is logged in to with `user`/`password` and kept if it's an EV3.
+    `report(found_so_far)` is called as bricks are confirmed."""
     own = set(lan_addresses(brick_link=True))
     nets = scan_networks()
     found, probed = [], set()
@@ -90,15 +130,12 @@ def find_bricks(report=None):
         hosts = [h for h in hosts if h not in own and h not in probed]
         probed.update(hosts)
         banners = list(pool.map(ssh_banner, hosts))
-        new = [{"ip": ip, "name": None, "via": via} for ip, banner in zip(hosts, banners)
-               if banner and "Debian" in banner]
-        found.extend(new)
-        if report:
-            report(found)   # show them at once; a name lookup can take seconds over Bluetooth
-        for item, name in zip(new, pool.map(device_name, [item["ip"] for item in new])):
-            item["name"] = name
-        if new and report:
-            report(found)
+        candidates = [ip for ip, banner in zip(hosts, banners) if banner and "OpenSSH" in banner]
+        for ip, brick in zip(candidates, pool.map(lambda ip: identify(ip, user, password), candidates)):
+            if brick:
+                found.append({"ip": ip, "via": via, **brick})
+                if report:
+                    report(found)
 
     with ThreadPoolExecutor(128) as pool:
         # A brick on a Bluetooth/USB link is nearly always its .1 address: check those first
@@ -126,21 +163,13 @@ def paired_bluetooth_bricks():
     return sorted({line.strip() for line in out.splitlines() if line.strip()})
 
 
-def device_name(ip):
-    """The name the network knows `ip` by (e.g. ev3krutin), or None."""
-    try:
-        name = socket.gethostbyaddr(ip)[0]
-    except OSError:
-        return None
-    return name.split(".")[0] or None
-
-
 class BrickSearch:
     """One search at a time, in the background. `state` is what a UI shows:
-    {"running", "found": [{"ip", "name", "via"}], "paired": [names], "error"}; bricks appear in
-    "found" as soon as they answer."""
+    {"running", "found": [{"ip", "via", "name", "battery", "motors"}], "paired": [names], "error"};
+    bricks appear in "found" as soon as they're confirmed. `login` is (user, password)."""
 
-    def __init__(self):
+    def __init__(self, login=("robot", "maker")):
+        self.login = login
         self.lock = threading.Lock()
         self.state = {"running": False, "found": [], "paired": [], "error": ""}
 
@@ -158,7 +187,8 @@ class BrickSearch:
         lookup = threading.Thread(target=lambda: paired.extend(paired_bluetooth_bricks()), daemon=True)
         lookup.start()
         try:
-            found = find_bricks(report=lambda so_far: self.state.update(found=list(so_far)))
+            found = find_bricks(report=lambda so_far: self.state.update(found=list(so_far)),
+                                user=self.login[0], password=self.login[1])
             error = ""
         except Exception as e:
             found, error = [], f"Search failed: {e}"
@@ -166,5 +196,6 @@ class BrickSearch:
         names = {f.get("name") for f in found}
         waiting = [name for name in paired if name not in names]   # paired, but no network link yet
         if not found and not waiting and not error:
-            error = "No bricks found on this PC's networks."
+            error = ("No bricks found. A brick has to be on (with its IP address on its screen), and on "
+                     "the same Wi-Fi as this PC or linked to it over Bluetooth/USB.")
         self.state = {"running": False, "found": found, "paired": waiting, "error": error}

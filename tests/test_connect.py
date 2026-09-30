@@ -109,23 +109,53 @@ class FindBricksTest(unittest.TestCase):
         self.assertEqual(nets, [("192.168.0.0/24", "Bluetooth / USB"),   # the small link first
                                 ("192.168.4.0/22", "Wi-Fi")])            # not link-local or public ones
 
-    def test_only_ev3dev_like_ssh_counts_and_nothing_logs_in(self):
-        banners = {"192.168.4.57": "SSH-2.0-OpenSSH_7.4p1 Debian-10+deb9u7",   # ev3dev on Wi-Fi
-                   "192.168.0.1": "SSH-2.0-OpenSSH_7.4p1 Debian-10+deb9u7",    # ev3dev over Bluetooth
-                   "192.168.4.1": "SSH-2.0-dropbear_2020.81",                  # a router
+    def test_only_confirmed_ev3_bricks_are_listed(self):
+        banners = {"192.168.4.57": "SSH-2.0-OpenSSH_7.4p1 Debian-10+deb9u7",   # ev3krutin on Wi-Fi
+                   "192.168.0.1": "SSH-2.0-OpenSSH_7.4p1 Debian-10+deb9u7",    # ev3kk over Bluetooth
+                   "192.168.4.60": "SSH-2.0-OpenSSH_8.4p1 Raspbian-5",         # a Raspberry Pi: login fails
+                   "192.168.4.1": "SSH-2.0-dropbear_2020.81",                  # a router: not even tried
                    "192.168.4.41": "SSH-2.0-OpenSSH_9.0p1 Debian-1"}           # this PC itself
-        names = {"192.168.4.57": "ev3krutin.lan", "192.168.0.1": "ev3kk"}
-        reports = []
-        with mock.patch.object(ev3_find, "ssh_banner", side_effect=lambda ip: banners.get(ip)) as banner,              mock.patch.object(ev3_find.socket, "gethostbyaddr", side_effect=lambda ip: (names[ip], [], [])):
-            found = ev3_find.find_bricks(report=lambda so_far: reports.append([dict(f) for f in so_far]))
-        self.assertEqual(found, [{"ip": "192.168.0.1", "name": "ev3kk", "via": "Bluetooth / USB"},
-                                 {"ip": "192.168.4.57", "name": "ev3krutin", "via": "Wi-Fi"}])
+        bricks = {"192.168.4.57": {"name": "ev3krutin", "battery": 7.2, "motors": ["outB", "outC"]},
+                  "192.168.0.1": {"name": "ev3kk", "battery": 7.7, "motors": ["outA", "outD"]}}
+        logins, reports = [], []
+
+        def identify(ip, user, password):
+            logins.append((ip, user, password))
+            return bricks.get(ip)
+
+        with mock.patch.object(ev3_find, "ssh_banner", side_effect=lambda ip: banners.get(ip)) as banner,              mock.patch.object(ev3_find, "identify", side_effect=identify):
+            found = ev3_find.find_bricks(report=lambda so_far: reports.append([dict(f) for f in so_far]),
+                                         user="robot", password="maker")
+        self.assertEqual(found, [{"ip": "192.168.0.1", "via": "Bluetooth / USB", "name": "ev3kk", "battery": 7.7,
+                                  "motors": ["outA", "outD"]},
+                                 {"ip": "192.168.4.57", "via": "Wi-Fi", "name": "ev3krutin", "battery": 7.2,
+                                  "motors": ["outB", "outC"]}])
+        self.assertEqual(reports[0][0]["name"], "ev3kk")          # the Bluetooth brick is reported first
+        self.assertEqual(sorted(ip for ip, _, _ in logins), ["192.168.0.1", "192.168.4.57", "192.168.4.60"])
+        self.assertTrue(all((u, p) == ("robot", "maker") for _, u, p in logins))   # the brick login
         asked = [call.args[0] for call in banner.call_args_list]
         self.assertEqual(asked[0], "192.168.0.1")                # the link's brick address first
-        self.assertEqual(reports[0], [{"ip": "192.168.0.1", "name": None, "via": "Bluetooth / USB"}])   # at once
         self.assertNotIn("192.168.4.41", asked)                  # never probes itself
         self.assertEqual(len(asked), len(set(asked)))            # nothing twice
-        self.assertEqual(len(asked), (254 - 1) + (1022 - 1))     # the /24 link and the /22 Wi-Fi, minus the PC
+
+    def test_identify_reads_an_ev3_and_rejects_the_rest(self):
+        outputs = {"ev3": "battery 7912000\nname ev3krutin\nmotor outB\nmotor outC\n", "pi": "not-ev3\n"}
+
+        class Client:
+            def __init__(self, kind): self.kind = kind
+            def set_missing_host_key_policy(self, policy): pass
+            def connect(self, *a, **k):
+                if self.kind == "refused":
+                    raise OSError("Authentication failed")
+            def exec_command(self, cmd, timeout=None):
+                return None, types.SimpleNamespace(read=lambda: outputs[self.kind].encode()), None
+            def close(self): pass
+
+        for kind, expected in (("ev3", {"name": "ev3krutin", "battery": 7.9, "motors": ["outB", "outC"]}),
+                               ("pi", None), ("refused", None)):
+            fake = types.SimpleNamespace(SSHClient=lambda k=kind: Client(k), AutoAddPolicy=lambda: None)
+            with mock.patch.dict(sys.modules, {"paramiko": fake}):
+                self.assertEqual(ev3_find.identify("192.168.4.57", "robot", "maker"), expected, kind)
 
     def test_scan_lists_paired_bricks_without_a_network(self):
         with mock.patch.object(phone.threading, "Thread"):
@@ -144,8 +174,9 @@ class FindBricksTest(unittest.TestCase):
         self.assertEqual(thread.call_count, 1)
         with mock.patch.object(ev3_find, "find_bricks", return_value=[]),              mock.patch.object(ev3_find, "paired_bluetooth_bricks", return_value=[]):
             controller.search.run()
-        self.assertEqual(controller.search.state, {"running": False, "found": [], "paired": [],
-                                           "error": "No bricks found on this PC's networks."})
+        state = controller.search.state
+        self.assertEqual((state["running"], state["found"], state["paired"]), (False, [], []))
+        self.assertTrue(state["error"].startswith("No bricks found."), state["error"])
 
 
 class AddressTest(unittest.TestCase):

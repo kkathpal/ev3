@@ -188,6 +188,7 @@ class Brick:
         self.measured = {}       # last read-back speed per motor path, as a fraction of full
         self.last_horn = -HORN_GAP
         self.name = None         # the brick's hostname, read when connecting
+        self.address = None      # the IP the connection was made to
         self.lock = threading.Lock()
 
     @property
@@ -197,7 +198,8 @@ class Brick:
     def connect(self):
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(ev3_config.ssh_address(HOST), username=USER, password=PASSWORD, timeout=8,
+        address = ev3_config.ssh_address(HOST)
+        client.connect(address, username=USER, password=PASSWORD, timeout=8,
                        look_for_keys=False, allow_agent=False)
         transport = client.get_transport()
         transport.set_keepalive(5)
@@ -224,7 +226,7 @@ class Brick:
         mon.sendall(MONITOR_SETUP)
 
         with self.lock:
-            self.client, self.ctl, self.paths, self.name = client, ctl, paths, name
+            self.client, self.ctl, self.paths, self.name, self.address = client, ctl, paths, name, address
             self.mon, self.mon_out = mon, mon.makefile("r")
         # Brake gives a crisp stop on key release; restored to ev3dev's default on close.
         self.send(" ".join(f"echo brake > {p}/stop_action;" for p in self.paths.values()))
@@ -851,7 +853,8 @@ class CalibrateWindow(tk.Toplevel):
 
 class ConnectWindow(tk.Toplevel):
     """Pick the brick: opens on every start, and from the header's Brick… button. Finds bricks
-    over Bluetooth/USB and Wi-Fi (ev3_find, never logging in), or takes a name or IP address.
+    over Bluetooth/USB and Wi-Fi (ev3_find: logs in with the brick login to confirm each is an EV3),
+    or takes a name or IP address.
     Picking one makes the monitor stop the current brick's motors, let it go and connect."""
 
     def __init__(self, app):
@@ -900,7 +903,8 @@ class ConnectWindow(tk.Toplevel):
         self.search_button = Pill(head, "Search again", self._search, font=FONT_SMALL, padx=px(8), pady=px(2))
         self.search_button.pack(side="right")
         tk.Label(box, text="Bricks linked to this PC over Bluetooth or USB, then bricks on the same Wi-Fi (the "
-                           "brick needs a USB Wi-Fi dongle). Click one to connect.",
+                           "brick needs a USB Wi-Fi dongle). Each is checked by logging in with the brick login "
+                           f"({USER} / {PASSWORD}). Click one to connect.",
                  bg=CARD, fg=DIM, font=FONT_SMALL, justify="left", wraplength=wrap).pack(anchor="w", pady=(px(4), px(6)))
         self.search_msg = tk.Label(box, text="", bg=CARD, fg=MUTED, font=FONT_SMALL, anchor="w", justify="left",
                                    wraplength=wrap)
@@ -943,15 +947,18 @@ class ConnectWindow(tk.Toplevel):
         self.status.configure(text=text, fg=color)
         state = self.app.search.state
         self.search_button.configure(text="Searching…" if state["running"] else "Search again")
-        self.search_msg.configure(text="Searching Bluetooth/USB first, then Wi-Fi (a few seconds)…"
+        self.search_msg.configure(text="Searching Bluetooth/USB first, then Wi-Fi, and checking each brick "
+                                       "(about 15 seconds)…"
                                   if state["running"] else state.get("error", ""))
-        key = (tuple((f["ip"], f["name"], f["via"]) for f in state["found"]), tuple(state.get("paired", [])))
+        now = self.app.brick.address if color == GOOD else None   # the brick connected right now
+        key = (tuple((f["ip"], f["name"], f["via"], f.get("battery"), tuple(f.get("motors", [])))
+                     for f in state["found"]), tuple(state.get("paired", [])), now)
         if key != self.results_key:   # rebuild only when the results change
             self.results_key = key
-            self._show_results(state["found"], state.get("paired", []))
+            self._show_results(state["found"], state.get("paired", []), now)
         self.refresh_id = self.after(300, self._refresh)
 
-    def _show_results(self, found, paired):
+    def _show_results(self, found, paired, now=None):
         for w in self.results.winfo_children():
             w.destroy()
         for f in found:
@@ -963,9 +970,18 @@ class ConnectWindow(tk.Toplevel):
             tag.pack(side="left", padx=px(8), pady=px(6))
             name = tk.Label(row, text=f["name"] or f["ip"], bg=TILE, fg=FG, font=FONT_BOLD)
             name.pack(side="left")
-            ip = tk.Label(row, text=f["ip"] if f["name"] else "", bg=TILE, fg=MUTED, font=FONT_SMALL)
-            ip.pack(side="right", padx=px(8))
-            for w in (row, tag, name, ip):
+            parts = [w for w in (row, tag, name)]
+            if f["ip"] == now:
+                mark = tk.Label(row, text="CONNECTED", bg=TILE, fg=GOOD, font=FONT_CAPS)
+                mark.pack(side="left", padx=(px(8), 0))
+                parts.append(mark)
+                row.configure(highlightthickness=px(1), highlightbackground=GOOD)
+            motors = " ".join(m[3:] if m.startswith("out") else m for m in f.get("motors", [])) or "none"
+            info = tk.Label(row, text=f"{f['ip']}\n{f.get('battery')} V · motors {motors}", bg=TILE, fg=MUTED,
+                            font=FONT_SMALL, justify="right")
+            info.pack(side="right", padx=px(8))
+            parts.append(info)
+            for w in parts:
                 w.bind("<Button-1>", lambda e, a=f["ip"]: self._connect(a))
         for name in paired:   # paired, but the Bluetooth network to it isn't connected yet
             tk.Label(self.results, text=f"{name} is paired over Bluetooth, but its Bluetooth network isn't "
@@ -1037,7 +1053,7 @@ class DriveApp(tk.Tk):
         self.cal_win = None        # CalibrateWindow while it is open
         self.conn_win = None       # ConnectWindow while it is open
         self.brick_host = HOST     # the address the current connection was made to
-        self.search = ev3_find.BrickSearch()   # Find bricks (Bluetooth/USB and Wi-Fi)
+        self.search = ev3_find.BrickSearch((USER, PASSWORD))   # Find bricks (Bluetooth/USB and Wi-Fi)
 
         self._build()
         self._fit_screen()

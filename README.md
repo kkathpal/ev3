@@ -66,8 +66,9 @@ Bricks that are only *paired* over Bluetooth are listed with the steps to connec
 Bluetooth network. For Wi-Fi the brick needs a USB Wi-Fi dongle and must be on the same network
 as the PC (on the brick: Wireless and Networks → Wi-Fi). With **Remember on this PC** ticked,
 the desktop app uses that brick too. Open the screen again any time with **📶 Brick · Wi-Fi**
-(below the gears) or **Connect another way…** on the "Waiting for the robot" screen. The search
-only reads each device's SSH greeting; it never logs in to anything.
+(below the gears) or **Connect another way…** on the "Waiting for the robot" screen. Each device that answers SSH is logged in to with the brick login in `ev3_config.json`
+(robot / maker by default); only confirmed EV3 bricks are listed, with the name, battery and
+motors the brick reports, and the one connected now is marked **Connected**.
 
 The phone can also set the robot up: tap **⚙ Setup · Calibrate** (below the gears). It has
 the same settings as the desktop's Setup card: which motor is each wheel, Invert, Swap,
@@ -101,7 +102,9 @@ brick. You can also type a brick's name (like `ev3kishan`) or its IP address (sh
 of the brick's screen). Bricks that are only *paired* over Bluetooth are listed with the steps
 to connect their Bluetooth network. With **Remember on this PC** ticked, the choice is saved in
 `ev3_config.json`, which the phone controller uses too. Reopen it any time with **📶 Brick…** in
-the header. The search only reads each device's SSH greeting; it never logs in to anything.
+the header. Each device that answers SSH is logged in to with the brick login in `ev3_config.json`
+(robot / maker by default); only confirmed EV3 bricks are listed, with the name, battery and
+motors the brick reports, and the one connected now is marked **Connected**.
 
 ## Driving
 
