@@ -56,6 +56,11 @@ For the phone, the server picks a random free port (8000–8999) each time, or t
 `python ev3_phone.py --port 8090`. Open the `http://…:<port>` address it prints (the phone must be
 on the same Wi-Fi; allow Python through the firewall if asked).
 
+The phone can also set the robot up: tap **⚙ Setup · Calibrate** (below the gears). It has
+the same settings as the desktop's Setup card: which motor is each wheel, Invert, Swap,
+**Calibrate by driving** (tap Test next to each arrow, tap what the robot did, then Save),
+Drift fix and Acceleration. The phone and the desktop app share these settings.
+
 On smaller screens, click a card's title (▾) to fold it away; the apps fold the least-needed
 cards themselves when the window wouldn't fit.
 

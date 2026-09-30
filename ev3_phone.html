@@ -91,6 +91,38 @@
   .warn { color: var(--warn); font-size: 12px; margin-top: 8px; min-height: 0; }
   footer { color: var(--dim); font-size: 11px; text-align: center; padding: 10px 0 12px; }
 
+  /* Setup · Calibrate screen */
+  .setupbtn { width: 100%; margin-top: 10px; padding: 10px; font-size: 13px; font-weight: 650; }
+  .sheet { position: fixed; inset: 0; z-index: 5; background: var(--bg); overflow-y: auto; display: none;
+    padding: env(safe-area-inset-top) 12px calc(env(safe-area-inset-bottom) + 16px); }
+  .sheet.show { display: block; }
+  .sheet-head { display: flex; align-items: center; gap: 10px; padding: 12px 2px 8px; }
+  .sheet-head h2 { flex: 1; margin: 0; font-size: 16px; }
+  .sheet .card { margin-bottom: 10px; }
+  .sheet .hint { color: var(--muted); font-size: 12px; margin: 4px 0 8px; }
+  .sheet .warn { margin: 0 0 10px; }
+  .srow { display: flex; align-items: center; gap: 8px; margin-top: 8px; min-width: 0; }
+  .srow label { width: 78px; flex: none; font-size: 13px; color: var(--muted); }
+  .srow select { flex: 1; min-width: 0; font: inherit; color: var(--fg); background: var(--tile);
+    border: 1px solid var(--line); border-radius: 8px; padding: 7px; }
+  .srow input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
+  .srow .val { width: 92px; text-align: right; font-size: 12px; flex: none; }
+  .chip { padding: 8px 10px; border-radius: 8px; font-size: 12px; font-weight: 600; touch-action: none; }
+  .chip.on { background: var(--accent); color: var(--bg); }
+  .calrow { display: grid; grid-template-columns: 26px auto minmax(0, 1fr); gap: 8px; align-items: center; margin-top: 8px; }
+  .calrow .sym { font-size: 18px; text-align: center; }
+  .calrow .test { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg);
+    font-size: 12px; font-weight: 650; touch-action: none; }
+  .calrow .test.on { background: var(--accent); color: var(--bg); }
+  .answers { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+  .answers .chip { padding: 8px 0; font-size: 11px; }
+  .calmsg { font-size: 12px; min-height: 16px; margin: 10px 0 8px; white-space: pre-line; }
+  .calmsg.ok { color: var(--good); } .calmsg.bad { color: var(--bad); }
+  .save { width: 100%; padding: 11px; border-radius: 10px; background: var(--accent); color: var(--bg);
+    font-weight: 750; }
+  .save:disabled { background: var(--tile); color: var(--dim); }
+  .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 8px; }
+
   .overlay { position: fixed; inset: 0; background: #0f1115e6; display: none; place-items: center;
     text-align: center; padding: 24px; z-index: 10; }
   .overlay.show { display: grid; }
@@ -141,10 +173,41 @@
     </div>
     <div class="gears" id="gears"></div>
     <div class="warn" id="warn"></div>
+    <button class="setupbtn" id="setupOpen">⚙ Setup · Calibrate</button>
   </section>
 </div>
 
 <footer id="foot">Hold arrows to drive · two fingers to curve</footer>
+
+<div class="sheet" id="setupSheet">
+  <div class="sheet-head"><h2>Setup · Calibrate</h2><button class="small" id="setupClose">Done</button></div>
+  <p class="warn" id="setupWarn"></p>
+  <section class="card">
+    <span class="caps">Motors</span>
+    <div class="srow"><label>Left wheel</label><select id="selLeft"></select><button class="chip" id="invLeft">Invert</button></div>
+    <div class="srow"><label>Right wheel</label><select id="selRight"></select><button class="chip" id="invRight">Invert</button></div>
+    <div class="srow"><button class="small" id="swapSides">⇄ Swap sides</button></div>
+  </section>
+  <section class="card">
+    <span class="caps">Calibrate by driving</span>
+    <p class="hint">Tap or hold Test: the robot moves slowly. Then tap what it actually did, and save.
+      It works out Swap and Invert for you.</p>
+    <div id="calRows"></div>
+    <p class="calmsg" id="calMsg"></p>
+    <button class="save" id="calSave">Save calibration</button>
+  </section>
+  <section class="card">
+    <span class="caps">Drift fix</span>
+    <p class="hint">Curves when it should go straight? Slide the other way.</p>
+    <div class="srow"><input type="range" id="trim" step="1"><span class="val" id="trimVal"></span>
+      <button class="small" id="trimReset">0</button></div>
+  </section>
+  <section class="card">
+    <span class="caps">Acceleration</span>
+    <p class="hint">Time from stopped to full speed. Gentle is easiest on the gears.</p>
+    <div class="seg" id="accels"></div>
+  </section>
+</div>
 
 <div class="overlay" id="overlay"><div><h2 id="ovTitle">Connecting…</h2><p id="ovText">Looking for the controller on your PC.</p></div></div>
 
@@ -231,7 +294,7 @@ document.querySelectorAll(".key").forEach(k => {
   const up = e => { pointers.delete(e.pointerId); recompute(); };
   ["pointerup", "pointercancel", "lostpointercapture"].forEach(t => k.addEventListener(t, up));
 });
-function releaseAll() { pointers.clear(); keys.clear(); recompute(); post("/stop", {}); }
+function releaseAll() { calStop(); pointers.clear(); keys.clear(); recompute(); post("/stop", {}); }
 $("stop").addEventListener("pointerdown", e => { e.preventDefault(); releaseAll(); });
 $("reset").addEventListener("click", () => post("/reset", {}));
 $("horn").addEventListener("pointerdown", e => { e.preventDefault(); post("/horn", {}); });
@@ -243,6 +306,7 @@ window.addEventListener("blur", releaseAll);
 const keys = new Set();
 const KEYMAP = { ArrowUp: "up", w: "up", ArrowDown: "down", s: "down", ArrowLeft: "left", a: "left", ArrowRight: "right", d: "right" };
 addEventListener("keydown", e => {
+  if (setupOpen) return;   // the Setup screen is open: keys don't drive
   if (KEYMAP[e.key]) { e.preventDefault(); keys.add(KEYMAP[e.key]); recompute(); }
   else if (e.key === " ") releaseAll();
   else if (e.key === "h" && !e.repeat) post("/horn", {});
@@ -274,7 +338,8 @@ async function poll() {
   } catch (e) { fail(); }
 }
 setInterval(() => {
-  if (held.size) send(false);                       // heartbeat: keeps the robot moving while held
+  if (calArrow) post("/cal/test", { arrow: calArrow });   // heartbeat for a calibration test
+  else if (held.size) send(false);                  // heartbeat: keeps the robot moving while held
   else if (performance.now() - lastState > 300) { lastState = performance.now(); poll(); }
 }, 100);
 
@@ -288,6 +353,8 @@ function fail() {
 }
 
 function show(s) {
+  last = s;
+  if (setupOpen) paintSetup();
   if (!built && s.modes) { maxCm = s.max_cm || maxCm; buildSpeedo(); buildGears(s.modes); window._modes = s.modes; built = true; }
   if (s.mode && s.mode !== mode && !held.size) { mode = s.mode; paintGears(); }
   const ok = s.connected;
@@ -323,6 +390,153 @@ function meter(side, v, max) {
   el.style.background = f >= 0 ? "var(--good)" : "var(--warn)";
   $("val" + side).textContent = v > 0 ? "+" + v : v;
 }
+
+// ---------- Setup · Calibrate (same as the desktop's Setup card) ----------
+const CAL_ARROWS = [["up", "↑"], ["down", "↓"], ["left", "←"], ["right", "→"]];
+const CAL_MOTIONS = [["up", "Forward"], ["down", "Backward"], ["left", "Left"], ["right", "Right"]];
+let last = {}, setupOpen = false, choice = {}, calArrow = null, calStarted = 0, calTimer = null;
+
+function openSetup() {
+  if (!last.setup) return;
+  releaseAll();
+  setupOpen = true;
+  choice = { ...last.setup.choice };
+  delete $("calMsg").dataset.saved;
+  buildSetup();
+  paintSetup();
+  $("setupSheet").classList.add("show");
+  $("setupSheet").scrollTop = 0;
+}
+function closeSetup() { calStop(); setupOpen = false; $("setupSheet").classList.remove("show"); }
+function setup(changes) { post("/setup", changes); }
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+function buildSetup() {
+  const su = last.setup;
+  for (const id of ["selLeft", "selRight"]) {
+    const sel = $(id); sel.innerHTML = "";
+    for (const p of su.ports) { const o = el("option", "", p.name); o.value = p.id; sel.append(o); }
+  }
+  const rows = $("calRows"); rows.innerHTML = "";
+  for (const [arrow, sym] of CAL_ARROWS) {
+    const row = el("div", "calrow"), test = el("button", "test", "Test"), answers = el("div", "answers");
+    test.dataset.arrow = arrow;
+    holdTest(test, arrow);
+    for (const [motion, name] of CAL_MOTIONS) {
+      const b = el("button", "chip", name);
+      b.dataset.arrow = arrow; b.dataset.motion = motion;
+      b.addEventListener("click", () => {
+        for (const a in choice) if (choice[a] === motion) choice[a] = null;   // each motion once
+        choice[arrow] = motion;
+        delete $("calMsg").dataset.saved;
+        paintCal();
+      });
+      answers.append(b);
+    }
+    row.append(el("span", "sym", sym), test, answers);
+    rows.append(row);
+  }
+  const t = $("trim"); t.min = -su.trim_range; t.max = su.trim_range;
+  const box = $("accels"); box.innerHTML = "";
+  for (const a of su.accels) {
+    const b = el("button", "chip", `${a.name} · ${a.seconds} s`);
+    b.dataset.accel = a.name;
+    b.addEventListener("click", () => setup({ accel: a.name }));
+    box.append(b);
+  }
+}
+
+function paintSetup() {
+  const su = last.setup; if (!su) return;
+  $("setupWarn").textContent = !last.connected ? "Not connected to the brick yet." :
+    su.left === su.right ? "Pick two different motors." : (last.warning || "");
+  if (document.activeElement !== $("selLeft")) $("selLeft").value = su.left;
+  if (document.activeElement !== $("selRight")) $("selRight").value = su.right;
+  $("invLeft").classList.toggle("on", su.invert_left);
+  $("invRight").classList.toggle("on", su.invert_right);
+  if (document.activeElement !== $("trim")) $("trim").value = su.trim;
+  paintTrim(+$("trim").value);
+  document.querySelectorAll("#accels .chip").forEach(b => b.classList.toggle("on", b.dataset.accel === su.accel));
+  paintCal();
+}
+function paintTrim(t) {
+  $("trimVal").textContent = t === 0 ? "0 · straight" : t > 0 ? `left wheel +${t}%` : `right wheel +${-t}%`;
+}
+function calReason() {
+  if (CAL_ARROWS.some(([a]) => !choice[a])) return "Tap what the robot did for every arrow.";
+  const pair = [choice.up, choice.down].sort().join();
+  if (pair !== "down,up" && pair !== "left,right")
+    return "⚠ ↑ and ↓ run the motors exactly opposite, so they must be Forward + Backward or Left + Right. Test them again.";
+  return "";
+}
+function paintCal() {
+  document.querySelectorAll("#calRows .chip").forEach(b => b.classList.toggle("on", choice[b.dataset.arrow] === b.dataset.motion));
+  document.querySelectorAll("#calRows .test").forEach(b => b.classList.toggle("on", b.dataset.arrow === calArrow));
+  const reason = calReason(), msg = $("calMsg");
+  if (!msg.dataset.saved) {
+    msg.textContent = reason || "✓ Looks right. Save to use it (Drift fix stays as it is).";
+    msg.className = "calmsg " + (!reason ? "ok" : reason.startsWith("⚠") ? "bad" : "");
+  }
+  $("calSave").disabled = !!reason;
+}
+
+// Test runs while held, and at least test_ms, so a quick tap moves the robot visibly
+function holdTest(btn, arrow) {
+  btn.addEventListener("pointerdown", e => {
+    e.preventDefault(); btn.setPointerCapture(e.pointerId);
+    clearTimeout(calTimer); calTimer = null;
+    calArrow = arrow; calStarted = performance.now();
+    post("/cal/test", { arrow });
+    paintCal();
+  });
+  const up = () => {
+    if (calArrow !== arrow) return;
+    clearTimeout(calTimer);
+    const left = (last.setup ? last.setup.test_ms : 700) - (performance.now() - calStarted);
+    if (left > 0) calTimer = setTimeout(calStop, left); else calStop();
+  };
+  ["pointerup", "pointercancel", "lostpointercapture"].forEach(t => btn.addEventListener(t, up));
+}
+function calStop() {
+  clearTimeout(calTimer); calTimer = null;
+  if (calArrow) { calArrow = null; post("/stop", {}); }
+  if (setupOpen) paintCal();
+}
+
+$("setupOpen").addEventListener("click", openSetup);
+$("setupClose").addEventListener("click", closeSetup);
+$("selLeft").addEventListener("change", e => setup({ left: e.target.value }));
+$("selRight").addEventListener("change", e => setup({ right: e.target.value }));
+$("invLeft").addEventListener("click", () => setup({ invert_left: !last.setup.invert_left }));
+$("invRight").addEventListener("click", () => setup({ invert_right: !last.setup.invert_right }));
+$("swapSides").addEventListener("click", () => setup({ left: last.setup.right, right: last.setup.left }));
+$("trim").addEventListener("input", e => paintTrim(+e.target.value));
+$("trim").addEventListener("change", e => setup({ trim: +e.target.value }));
+$("trimReset").addEventListener("click", () => { $("trim").value = 0; paintTrim(0); setup({ trim: 0 }); });
+$("calSave").addEventListener("click", async () => {
+  if (calReason()) return;
+  calStop();
+  try {
+    const r = await fetch("/cal/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ choice }) });
+    const s = await r.json();
+    show(s);
+    const msg = $("calMsg");
+    if (s.saved) {
+      const su = s.setup, name = id => (su.ports.find(p => p.id === id) || { name: id }).name;
+      msg.textContent = `✓ Saved: left wheel = ${name(su.left)}${su.invert_left ? " (inverted)" : ""}, ` +
+                        `right wheel = ${name(su.right)}${su.invert_right ? " (inverted)" : ""}. Drive ↑ to check.`;
+      msg.className = "calmsg ok"; msg.dataset.saved = "1";
+      choice = { ...su.choice };
+      paintCal();
+    } else { msg.textContent = s.error; msg.className = "calmsg bad"; }
+  } catch (e) { fail(); }
+});
 
 buildSpeedo(); animate(); poll();
 </script>

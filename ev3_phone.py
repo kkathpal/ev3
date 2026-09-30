@@ -128,6 +128,75 @@ class Controller:
     def reset_trip(self):
         self.trip_cm = self.top_speed = 0.0
 
+    # ----- Setup · Calibrate from the phone (same as the desktop's Setup card) -----
+    def cal_test(self, arrow):
+        """Calibrate by driving: run the picked motors in CAL_PATTERNS[arrow] (no Invert, slow
+        TEST_SPEED timed pulses) while the phone keeps re-sending it; _safety stops it after."""
+        with self.lock:
+            self.held = set()
+            self.last_command = time.monotonic()
+            self._reload_settings()
+            lp_name, rp_name = self._ports()
+            lp, rp = self.brick.paths.get(lp_name), self.brick.paths.get(rp_name)
+            if arrow in rc.CAL_PATTERNS and self.brick.connected and lp and rp and lp != rp:
+                a, b = rc.CAL_PATTERNS[arrow]
+                self.brick.drive(lp, rp, a * rc.TEST_SPEED, b * rc.TEST_SPEED)
+                self.moving = True
+            elif self.moving:
+                self.stop(released=True)
+
+    def _save(self, changes):
+        """Stop, then save setting changes (call with the lock held)."""
+        self.stop()
+        self._reload_settings()
+        rc.save_settings({**self.settings, **changes})
+        self.settings_mtime = None   # re-read now
+
+    def update_setup(self, data):
+        """Motors, Invert, Drift fix or Acceleration changed on the phone."""
+        changes = {}
+        for key in ("left", "right"):
+            if data.get(key) in self.brick.paths:
+                changes[key] = data[key]
+        for key in ("invert_left", "invert_right"):
+            if isinstance(data.get(key), bool):
+                changes[key] = data[key]
+        if isinstance(data.get("trim"), (int, float)) and not isinstance(data.get("trim"), bool):
+            changes["trim"] = int(max(-rc.TRIM_RANGE, min(rc.TRIM_RANGE, data["trim"])))
+        if data.get("accel") in dict(rc.ACCELERATIONS):
+            changes["accel"] = data["accel"]
+        if changes:
+            with self.lock:
+                self._save(changes)
+
+    def save_calibration(self, choice):
+        """Calibrate by driving's answers → Swap/Invert, like the desktop. Returns an error or ""."""
+        result, reason = rc.cal_result(choice if isinstance(choice, dict) else {})
+        if not result:
+            return reason
+        swap, invert_left, invert_right = result
+        with self.lock:
+            left, right = self._ports()
+            changes = {"invert_left": invert_left, "invert_right": invert_right}
+            if swap:
+                changes.update(left=right, right=left)
+            self._save(changes)
+        return ""
+
+    def _setup_state(self):
+        inv_l, inv_r = self._inverts()
+        left, right = self._ports()
+        accel = self.settings.get("accel")
+        return {
+            "ports": [{"id": p, "name": rc.port_name(p)} for p in sorted(self.brick.paths)],
+            "left": left, "right": right, "invert_left": inv_l, "invert_right": inv_r,
+            "trim": self.settings.get("trim", 0), "trim_range": rc.TRIM_RANGE,
+            "accel": accel if accel in dict(rc.ACCELERATIONS) else rc.DEFAULT_ACCEL,
+            "accels": [{"name": n, "seconds": s} for n, s in rc.ACCELERATIONS],
+            "choice": rc.cal_predict(inv_l, inv_r),   # pre-filled Calibrate answers
+            "test_ms": rc.TEST_MS,
+        }
+
     def _safety(self):
         """Stop the robot if the phone that's driving goes quiet (Wi-Fi drop, app switch...)."""
         while True:
@@ -201,7 +270,10 @@ class Controller:
         }
 
     def state(self):
-        return {**self.telemetry, "mode": self.mode}
+        with self.lock:
+            self._reload_settings()
+            setup = self._setup_state()
+        return {**self.telemetry, "mode": self.mode, "setup": setup}
 
 
 controller = None
@@ -267,6 +339,13 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/horn":
             with controller.lock:   # one writer at a time on the brick's command shell
                 controller.brick.horn()
+        elif self.path == "/setup":
+            controller.update_setup(data)
+        elif self.path == "/cal/test":
+            controller.cal_test(data.get("arrow"))
+        elif self.path == "/cal/save":
+            error = controller.save_calibration(data.get("choice"))
+            return self._json({**controller.state(), "saved": not error, "error": error})
         else:
             return self.send_error(404)
         self._json(controller.state())
