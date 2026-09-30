@@ -92,8 +92,10 @@ do it by hand: pick which motor is each wheel, press **Test** to check it rolls 
 **Invert** if not). Use **Drift fix** if it curves when it should go straight. Settings are saved
 in `ev3_drive_settings.json` next to the app (one per computer), and the phone uses them too.
 
-To go easy on the gears the robot speeds up gradually. Tune `RAMP_SECONDS`, `STEER_SECONDS`,
-`RELEASE_STOP` and `HARD_STOP` at the top of `ev3_drive.pyw`.
+To go easy on the gears the robot speeds up gradually. Pick how fast in the **Setup** card:
+**Acceleration** Quick (0.6 s from stopped to full power, the default), Normal (1.2 s) or Gentle
+(2.5 s, easiest on the gears). The phone uses the same setting. Tune `ACCELERATIONS`,
+`STEER_SECONDS`, `RELEASE_STOP` and `HARD_STOP` at the top of `ev3_drive.pyw`.
 
 ## Sound
 

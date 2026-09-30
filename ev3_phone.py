@@ -107,7 +107,8 @@ class Controller:
         lp_name, rp_name = self._ports()
         lp, rp = self.brick.paths.get(lp_name), self.brick.paths.get(rp_name)
         if (left or right) and self.brick.connected and lp and rp and lp != rp:
-            rc.send_drive(self.brick, lp, rp, left, right, self.mode, inv_l, inv_r)
+            rc.send_drive(self.brick, lp, rp, left, right, self.mode, inv_l, inv_r,
+                          rc.ramp_seconds(self.settings))   # the desktop app's Acceleration setting
             self.moving = True
         elif self.moving or not self.held:
             self.stop(released=True)

@@ -38,30 +38,48 @@ class DriveTest(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def drive(self, held, mode, ticks=1, invert=(False, False), tick=TICK):
+    def drive(self, held, mode, ticks=1, invert=(False, False), tick=TICK, ramp=rc.RAMP_SECONDS):
         """Hold `held` for `ticks` renewals; return the last (left, right) motor command."""
         for _ in range(ticks):
             left, right = rc.wheel_commands(held, mode)
-            rc.send_drive(self.brick, "L", "R", left, right, mode, *invert)
+            rc.send_drive(self.brick, "L", "R", left, right, mode, *invert, ramp=ramp)
             self.now += tick
         attr = "duty_cycle_sp" if mode == rc.TURBO else "speed_sp"
         cmd = self.brick.sent[-1]
         return tuple(int(cmd.split(f" > {p}/{attr}")[0].rsplit("echo ", 1)[1]) for p in ("L", "R"))
 
-    def full_ramp(self):
-        return int(rc.RAMP_SECONDS / TICK) + 2
+    def full_ramp(self, ramp=rc.RAMP_SECONDS):
+        return int(ramp / TICK) + 2
+
+    def first_step(self, ramp=rc.RAMP_SECONDS):
+        """The most the first command may reach: one renewal's share of the ramp."""
+        return rc.MOTOR_LIMIT * TICK / ramp + 1
 
     def test_speeds_up_gradually(self):
         left, right = self.drive({"up"}, "Fast")
         self.assertGreater(left, 0)
-        self.assertLess(left, rc.MAX_SPEED * 0.1)
+        self.assertLess(left, self.first_step())
+        self.assertLess(left, rc.MAX_SPEED)   # not straight to full speed
         self.assertEqual(self.drive({"up"}, "Fast", self.full_ramp()), (rc.MAX_SPEED, rc.MAX_SPEED))
+
+    def test_acceleration_setting(self):
+        gentle = dict(rc.ACCELERATIONS)["Gentle"]
+        quick_first = self.drive({"up"}, "Fast")[0]
+        self.brick.stop(released=True)
+        gentle_first = self.drive({"up"}, "Fast", ramp=gentle)[0]
+        self.assertLess(gentle_first, quick_first)   # Gentle speeds up more slowly
+        self.assertLess(gentle_first, self.first_step(gentle))
+        self.assertEqual(self.drive({"up"}, "Fast", self.full_ramp(gentle), ramp=gentle), (rc.MAX_SPEED,) * 2)
+        self.assertEqual(rc.ramp_seconds({"accel": "Gentle"}), gentle)
+        self.assertEqual(rc.ramp_seconds({}), rc.RAMP_SECONDS)             # unset: the default
+        self.assertEqual(rc.ramp_seconds({"accel": "Warp"}), rc.RAMP_SECONDS)   # unknown: the default
 
     def test_acceleration_does_not_depend_on_command_rate(self):
         # The phone renews faster than the desktop app; it must not accelerate harder.
-        slow = self.drive({"up"}, "Fast", 10)
+        gentle = dict(rc.ACCELERATIONS)["Gentle"]   # long enough that neither reaches full speed
+        slow = self.drive({"up"}, "Fast", 10, ramp=gentle)
         self.brick.stop(released=True)
-        fast = self.drive({"up"}, "Fast", 20, tick=TICK / 2)
+        fast = self.drive({"up"}, "Fast", 20, tick=TICK / 2, ramp=gentle)
         self.assertAlmostEqual(slow[0], fast[0], delta=rc.MOTOR_LIMIT * 0.05)
 
     def test_curve_from_rest_turns_at_once(self):
@@ -103,7 +121,7 @@ class DriveTest(unittest.TestCase):
         self.brick.stop()
         self.assertIn(f"echo {rc.HARD_STOP} > L/stop_action", self.brick.sent[-1])
         left, _ = self.drive({"up"}, "Fast")
-        self.assertLess(left, rc.MAX_SPEED * 0.1)   # starts gently again after a stop
+        self.assertLess(left, self.first_step())   # starts gently again after a stop
 
 
 class CalibrateTest(unittest.TestCase):

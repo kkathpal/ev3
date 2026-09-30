@@ -46,9 +46,10 @@ Pipeline, called every `RENEW_MS` (120 ms) while a key is held, and immediately 
 
 1. `wheel_commands(held, mode, trim)` → target wheel speeds in deg/s, **wheel space** (+ = forward,
    before Invert). Curves slow the inner wheel to `TURN_INNER`; left/right alone spins in place.
-2. `send_drive(brick, lp, rp, left, right, mode, invert_left, invert_right)`:
+2. `send_drive(brick, lp, rp, left, right, mode, invert_left, invert_right, ramp)`:
    - `Brick.ramp()` moves from the last levels toward the targets. **Overall speed** (average of the
-     wheels) changes over `RAMP_SECONDS`; **steering** (half their difference) over `STEER_SECONDS`,
+     wheels) changes over `ramp` seconds, the saved Acceleration setting (`ACCELERATIONS`, key `accel`,
+     read with `ramp_seconds(settings)`; default `RAMP_SECONDS` = Quick); **steering** (half their difference) over `STEER_SECONDS`,
      scaled with speed so a curve keeps its shape from a standstill. Rates are per second (from
      `time.monotonic()`), not per command, because the phone renews faster than the desktop.
      This protects the robot's gears; don't remove it.

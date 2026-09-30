@@ -27,8 +27,8 @@ Keys (the window must be focused):
 Turbo drives the motors at raw power (run-direct duty cycle) instead of a regulated
 speed: a little faster, but the wheels are no longer speed-matched, so it may drift.
 
-To spare the gears, every gear speeds up gradually (RAMP_SECONDS from stopped to full
-power). Letting go of the keys stops with RELEASE_STOP; Space stops with HARD_STOP,
+To spare the gears, every gear speeds up gradually: the Acceleration setting in SETUP
+(Quick 0.6 s, Normal 1.2 s or Gentle 2.5 s from stopped to full power). Letting go of the keys stops with RELEASE_STOP; Space stops with HARD_STOP,
 which actively holds the wheels still.
 
 Safety: every command runs the motors for only PULSE_MS and is renewed while a key
@@ -67,7 +67,11 @@ MAX_SPEED = 1000         # deg/s at 100 % (EV3 large motor max is ~1050)
 MODES = [("Slow", 25), ("Normal", 50), ("Fast", 100), ("Turbo", 100)]   # name, % of top speed
 TURBO = "Turbo"          # raw full power instead of speed-regulated
 WATCHDOG_CS = 50         # Turbo: stop if no heartbeat for this many 1/100 s
-RAMP_SECONDS = 2.5       # time to go from stopped to full power, in every gear (raise for gentler gears)
+# Acceleration (Setup card): time to go from stopped to full power, in every gear. Some
+# ramp spares the gears; pick Gentle for a heavy robot or to go easier on them.
+ACCELERATIONS = [("Quick", 0.6), ("Normal", 1.2), ("Gentle", 2.5)]
+DEFAULT_ACCEL = "Quick"
+RAMP_SECONDS = dict(ACCELERATIONS)[DEFAULT_ACCEL]
 STEER_SECONDS = 0.5      # time for steering to swing fully (short, so turns respond at once)
 # How motors stop: "coast" (roll freely, gentlest), "brake" (short the motor, stops
 # quickly) or "hold" (actively drives the wheel back to where it stopped, strongest).
@@ -233,12 +237,12 @@ class Brick:
             self.ctl = None
             return False
 
-    def ramp(self, left_path, right_path, left, right, signs):
+    def ramp(self, left_path, right_path, left, right, signs, ramp_seconds=RAMP_SECONDS):
         """Move the wheels from their last levels toward `left`/`right` and return the new levels.
 
         Levels are fractions of full power per wheel, + = forward (before any Invert;
         `signs` is ±1 per wheel for Invert, only needed to read measured speeds). Overall
-        speed changes over RAMP_SECONDS but steering (the difference between the wheels)
+        speed changes over `ramp_seconds` (the Acceleration setting) but steering (the difference between the wheels)
         over STEER_SECONDS, so turns respond at once while speeding up stays gentle on the
         gears. Rates are per second, not per command, so the phone's faster heartbeat or
         a burst of key changes can't make it accelerate harder. After a coasting stop the
@@ -259,7 +263,7 @@ class Brick:
 
         was_l, was_r = last(left_path, signs[0]), last(right_path, signs[1])
         target_speed, target_steer = (left + right) / 2, (left - right) / 2
-        speed = toward((was_l + was_r) / 2, target_speed, RAMP_SECONDS)
+        speed = toward((was_l + was_r) / 2, target_speed, ramp_seconds)
         # While speed is still ramping, scale steering with it so a curve keeps its shape
         # (and the inner wheel never runs backwards). Spinning in place has no speed to follow.
         share = 1 if target_speed == 0 else max(0, min(1, speed / target_speed))
@@ -388,12 +392,18 @@ def wheel_commands(held, mode, trim=0):
     return clamp(left), clamp(right)
 
 
-def send_drive(brick, left_path, right_path, left, right, mode, invert_left=False, invert_right=False):
+def ramp_seconds(settings):
+    """The saved Acceleration setting as seconds from stopped to full power."""
+    return dict(ACCELERATIONS).get(settings.get("accel"), RAMP_SECONDS)
+
+
+def send_drive(brick, left_path, right_path, left, right, mode, invert_left=False, invert_right=False,
+               ramp=RAMP_SECONDS):
     """One renewable drive pulse toward wheel speeds from wheel_commands, ramped for the
-    gears: speed-regulated, or raw power (with watchdog) in Turbo."""
+    gears over `ramp` seconds: speed-regulated, or raw power (with watchdog) in Turbo."""
     # Invert: a motor mounted the other way round needs the opposite command.
     signs = (-1 if invert_left else 1, -1 if invert_right else 1)
-    left, right = brick.ramp(left_path, right_path, left / MOTOR_LIMIT, right / MOTOR_LIMIT, signs)
+    left, right = brick.ramp(left_path, right_path, left / MOTOR_LIMIT, right / MOTOR_LIMIT, signs, ramp)
     left, right = left * signs[0], right * signs[1]
     if mode == TURBO:
         return brick.drive_direct(left_path, right_path, round(left * 100), round(right * 100))
@@ -790,6 +800,8 @@ class DriveApp(tk.Tk):
         self.invert_l = tk.BooleanVar(value=settings.get("invert_left", was_reversed))
         self.invert_r = tk.BooleanVar(value=settings.get("invert_right", was_reversed))
         self.trim = tk.IntVar(value=max(-TRIM_RANGE, min(TRIM_RANGE, settings.get("trim", 0))))
+        accel = settings.get("accel", DEFAULT_ACCEL)
+        self.accel = tk.StringVar(value=accel if accel in dict(ACCELERATIONS) else DEFAULT_ACCEL)
         self.known_ports = []
         self.readings = {}
         self.reading_seq = 0
@@ -996,6 +1008,17 @@ class DriveApp(tk.Tk):
         self.trim_label = tk.Label(drift, text="", bg=CARD, fg=FG, font=FONT_NUM, width=15, anchor="e")
         self.trim_label.pack(side="right")
         TrimSlider(drift, self.trim, TRIM_RANGE, self._trim_changed).pack(side="left", padx=px(8))
+        accel = tk.Frame(setup, bg=CARD)
+        accel.pack(fill="x", pady=(px(8), 0))
+        tk.Label(accel, text="Acceleration", bg=CARD, fg=MUTED, font=FONT).pack(side="left")
+        self.accel_buttons = {}
+        for name, seconds in ACCELERATIONS:
+            b = Pill(accel, f"{name} · {seconds:g} s", lambda n=name: self.accel.set(n), font=FONT_SMALL,
+                     padx=px(8), pady=px(2))
+            b.pack(side="left", padx=(px(6), 0))
+            self.accel_buttons[name] = b
+        self.accel.trace_add("write", lambda *a: self._accel_changed())
+        self._accel_changed(save=False)
         self.cal_hint = tk.Label(setup, text="Calibrate… drives each arrow and asks what the robot did.  "
                                              "Test: wheel should roll FORWARD (wrong wheel → ⇄ Swap, "
                                              "backward → Invert).  Curves going straight → slide Drift fix "
@@ -1132,7 +1155,7 @@ class DriveApp(tk.Tk):
                 self.brick.drive(lp, rp, left, right)
             else:
                 send_drive(self.brick, lp, rp, left, right, self.mode.get(),
-                           self.invert_l.get(), self.invert_r.get())
+                           self.invert_l.get(), self.invert_r.get(), dict(ACCELERATIONS)[self.accel.get()])
             self.moving = True
             self.tick_id = self.after(RENEW_MS, self._tick)
         elif self.moving:
@@ -1286,7 +1309,7 @@ class DriveApp(tk.Tk):
         self.focus_set()   # keep arrow keys going to the app after clicking a control
         save_settings({"left": self.left_port.get(), "right": self.right_port.get(),
                        "invert_left": self.invert_l.get(), "invert_right": self.invert_r.get(),
-                       "trim": self.trim.get(), "mode": self.mode.get()})
+                       "trim": self.trim.get(), "mode": self.mode.get(), "accel": self.accel.get()})
 
     # ---------- calibration ----------
     def _open_calibration(self):
@@ -1328,6 +1351,13 @@ class DriveApp(tk.Tk):
             text=f"Testing {port_name(port)} as the {side.upper()} wheel: it should roll FORWARD.  "
                  f"Other wheel moved → ⇄ Swap.  Rolled backward → tick Invert.", fg=FG)
         self.focus_set()
+
+    def _accel_changed(self, save=True):
+        for name, b in self.accel_buttons.items():
+            on = name == self.accel.get()
+            b.configure(bg=blend(ACCENT, CARD, 0.35) if on else TILE, fg=BG if on else FG)
+        if save:
+            self._settings_changed()
 
     def _trim_changed(self, save=True):
         t = self.trim.get()
