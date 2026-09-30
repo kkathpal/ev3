@@ -602,9 +602,10 @@ class WheelMeter(tk.Canvas):
 
 
 class DPad(tk.Canvas):
-    """Arrow pad with a round STOP button in the middle; lights up for held directions."""
+    """Arrow pad with a round STOP button in the middle and HORN in the corner (always in
+    view, unlike the foldable Sound card); lights up for held directions."""
 
-    def __init__(self, parent, on_press, on_release, on_stop, size=196):
+    def __init__(self, parent, on_press, on_release, on_stop, on_horn, size=196):
         s = px(size)
         super().__init__(parent, width=s, height=s, bg=CARD, highlightthickness=0)
         c, k, gap = s / 2, px(52), px(11)   # centre, key size, gap from the stop button
@@ -634,6 +635,14 @@ class DPad(tk.Canvas):
         self.create_text(c, c + px(11), text="space", fill=blend(BG, BAD, 0.4), font=FONT_CAPS,
                          tags="stop")
         self.tag_bind("stop", "<Button-1>", lambda e: on_stop())
+        # HORN in the bottom-right corner, between the → and ↓ keys
+        hx = hy = c + stop_r + gap + k / 2
+        hr = px(23)
+        self.horn_button = self.create_oval(hx - hr, hy - hr, hx + hr, hy + hr, fill=blend(WARN, CARD, 0.8),
+                                            outline=blend(WARN, CARD, 0.5), width=px(1), tags="horn")
+        self.create_text(hx, hy - px(2), text="HORN", fill=WARN, font=FONT_CAPS, tags="horn")
+        self.create_text(hx, hy + px(9), text="H", fill=blend(WARN, CARD, 0.4), font=FONT_CAPS, tags="horn")
+        self.tag_bind("horn", "<Button-1>", lambda e: on_horn())
         self.configure(cursor="hand2")
 
     def _rounded(self, x1, y1, x2, y2, r, **kw):
@@ -1005,7 +1014,7 @@ class DriveApp(tk.Tk):
 
         # controls: d-pad | gears
         controls = self._card()
-        self.dpad = DPad(controls, self._press, self._release, self._release_all)
+        self.dpad = DPad(controls, self._press, self._release, self._release_all, self.brick.horn)
         self.dpad.pack(side="left")
         gears = tk.Frame(controls, bg=CARD)
         gears.pack(side="left", expand=True, fill="both", padx=(px(14), 0))
