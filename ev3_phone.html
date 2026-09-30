@@ -137,6 +137,20 @@
   .overlay.show { display: grid; }
   .overlay h2 { margin: 0 0 6px; font-size: 18px; }
   .overlay p { margin: 0; color: var(--muted); }
+  .overlay button { margin-top: 16px; padding: 10px 16px; font-weight: 650; }
+  .overlay button[hidden] { display: none; }
+
+  /* Connection screen: above the "Waiting for the robot" overlay, so it works while disconnected */
+  .sheet.conn { z-index: 20; }
+  .btnrow { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .connstatus { font-size: 13px; margin: 0 0 10px; color: var(--muted); }
+  .connstatus.ok { color: var(--good); }
+  .srow input[type=text] { flex: 1; min-width: 0; font: inherit; color: var(--fg); background: var(--tile);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+  .checkrow { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+  .checkrow input { width: 18px; height: 18px; accent-color: var(--accent); }
+  .found { display: grid; gap: 6px; margin-top: 10px; }
+  .found button { padding: 10px; text-align: left; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -189,7 +203,10 @@
     </div>
     <div class="gears" id="gears"></div>
     <div class="warn" id="warn"></div>
-    <button class="setupbtn" id="setupOpen">⚙ Setup · Calibrate</button>
+    <div class="btnrow">
+      <button class="setupbtn" id="connOpen">📶 Brick · Wi-Fi</button>
+      <button class="setupbtn" id="setupOpen">⚙ Setup · Calibrate</button>
+    </div>
   </section>
 </div>
 
@@ -225,7 +242,29 @@
   </section>
 </div>
 
-<div class="overlay" id="overlay"><div><h2 id="ovTitle">Connecting…</h2><p id="ovText">Looking for the controller on your PC.</p></div></div>
+<div class="sheet conn" id="connSheet">
+  <div class="sheet-head"><h2>Connect to the brick</h2><button class="small" id="connClose">Done</button></div>
+  <p class="connstatus" id="connStatus"></p>
+  <section class="card">
+    <span class="caps">Brick address</span>
+    <p class="hint">The brick's name (like ev3kishan) or its IP address: the brick's screen shows its IP at the top.</p>
+    <div class="srow"><input type="text" id="connAddr" autocapitalize="off" autocorrect="off" spellcheck="false"
+      inputmode="url" placeholder="ev3kishan or 192.168.1.23"><button class="small" id="connGo">Connect</button></div>
+    <label class="checkrow"><input type="checkbox" id="connRemember" checked> Remember on this PC (the desktop app uses it too)</label>
+    <p class="calmsg" id="connMsg"></p>
+  </section>
+  <section class="card">
+    <span class="caps">Wi-Fi</span>
+    <p class="hint">For Wi-Fi the brick needs a USB Wi-Fi dongle. On the brick: Wireless and Networks → Wi-Fi → pick the
+      same network as this PC. Then search, or type the IP it shows.</p>
+    <button class="setupbtn" id="scanGo">Find bricks on Wi-Fi</button>
+    <p class="calmsg" id="scanMsg"></p>
+    <div class="found" id="scanList"></div>
+  </section>
+</div>
+
+<div class="overlay" id="overlay"><div><h2 id="ovTitle">Connecting…</h2><p id="ovText">Looking for the controller on your PC.</p>
+  <button id="ovConn" hidden>Connect another way…</button></div></div>
 
 <script>
 const GEAR_COLORS = { Slow: "#3ddc97", Normal: "#5aa9ff", Fast: "#ffb547", Turbo: "#ff4fd8" };
@@ -350,7 +389,7 @@ window.addEventListener("blur", releaseAll);
 const keys = new Set();
 const KEYMAP = { ArrowUp: "up", w: "up", ArrowDown: "down", s: "down", ArrowLeft: "left", a: "left", ArrowRight: "right", d: "right" };
 addEventListener("keydown", e => {
-  if (setupOpen) return;   // the Setup screen is open: keys don't drive
+  if (setupOpen || connOpen) return;   // the Setup or Connection screen is open: keys don't drive
   if (KEYMAP[e.key]) { e.preventDefault(); hardStop = false; keys.add(KEYMAP[e.key]); recompute(); }
   else if (e.key === " ") releaseAll();
   else if (e.key === "h" && !e.repeat) post("/horn", {});
@@ -396,6 +435,7 @@ function fail() {
   if (++failures >= 3) {
     $("overlay").classList.add("show");
     $("ovTitle").textContent = "Can't reach the PC";
+    $("ovConn").hidden = true;   // nothing to switch: the PC itself isn't answering
     $("ovText").textContent = "Is ev3_phone.py still running, and is this phone on the same Wi-Fi?";
     $("dot").style.background = "var(--bad)";
   }
@@ -404,11 +444,13 @@ function fail() {
 function show(s) {
   last = s;
   if (setupOpen) paintSetup();
+  if (connOpen) paintConn();
   if (!built && s.modes) { maxCm = s.max_cm || maxCm; buildSpeedo(); buildGears(s.modes); window._modes = s.modes; built = true; }
   if (s.mode && s.mode !== mode && !driving()) { mode = s.mode; paintGears(); }
   const ok = s.connected;
   $("overlay").classList.toggle("show", !ok);
   if (!ok) { $("ovTitle").textContent = "Waiting for the robot"; $("ovText").textContent = s.status || "Connecting to the brick…"; }
+  $("ovConn").hidden = ok;
   $("dot").style.background = ok ? "var(--good)" : "var(--warn)";
   $("host").textContent = s.motors || "";
 
@@ -592,6 +634,67 @@ $("calSave").addEventListener("click", async () => {
     } else { msg.textContent = s.error; msg.className = "calmsg bad"; }
   } catch (e) { fail(); }
 });
+
+// ---------- Connection: which brick, over Wi-Fi or by IP address ----------
+let connOpen = false;
+
+function openConn() {
+  releaseAll();
+  connOpen = true;
+  const c = last.connection || {};
+  $("connAddr").value = (c.host || "").replace(/\.local$/, "");
+  $("connMsg").textContent = "";
+  $("connSheet").classList.add("show");
+  $("connSheet").scrollTop = 0;
+  paintConn();
+}
+function closeConn() { connOpen = false; $("connSheet").classList.remove("show"); }
+
+function paintConn() {
+  const c = last.connection; if (!c) return;
+  const st = $("connStatus");
+  if (last.connected) {
+    st.textContent = `✓ Connected to ${c.host}` + (c.name && c.name + ".local" !== c.host ? ` (${c.name})` : "");
+    st.className = "connstatus ok";
+  } else {
+    st.textContent = last.status || `Connecting to ${c.host}…`;
+    st.className = "connstatus";
+  }
+  const scan = c.scan || {};
+  $("scanGo").disabled = !!scan.running;
+  $("scanGo").textContent = scan.running ? "Searching this PC's networks…" : "Find bricks on Wi-Fi";
+  $("scanMsg").textContent = scan.running ? "This takes a few seconds." : (scan.error || "");
+  const list = $("scanList"), found = scan.found || [], key = found.map(f => f.ip + f.name).join();
+  if (list.dataset.key !== key) {   // rebuild only when the results change
+    list.dataset.key = key; list.innerHTML = "";
+    for (const f of found) {
+      const b = document.createElement("button");
+      b.textContent = f.name ? `${f.name}  ·  ${f.ip}` : f.ip;
+      b.addEventListener("click", () => { $("connAddr").value = f.ip; connect(); });
+      list.append(b);
+    }
+  }
+}
+
+async function connect() {
+  const address = $("connAddr").value.trim(), msg = $("connMsg");
+  if (!address) { msg.textContent = "Type the brick's name or IP address."; msg.className = "calmsg bad"; return; }
+  try {
+    const r = await fetch("/connect", { method: "POST", headers: { "Content-Type": "application/json" },
+                                        body: JSON.stringify({ address, remember: $("connRemember").checked }) });
+    const s = await r.json();
+    show(s);
+    msg.textContent = s.error || `Connecting to ${s.connection.host}… (it can take up to 10 seconds)`;
+    msg.className = "calmsg " + (s.error ? "bad" : "");
+  } catch (e) { fail(); }
+}
+
+$("connOpen").addEventListener("click", openConn);
+$("ovConn").addEventListener("click", openConn);
+$("connClose").addEventListener("click", closeConn);
+$("connGo").addEventListener("click", connect);
+$("connAddr").addEventListener("keydown", e => { if (e.key === "Enter") connect(); });
+$("scanGo").addEventListener("click", () => post("/scan", {}));
 
 buildSpeedo(); animate(); poll();
 </script>

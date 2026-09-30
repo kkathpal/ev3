@@ -186,6 +186,7 @@ class Brick:
         self.coasting = False    # last stop let the motors roll instead of braking
         self.measured = {}       # last read-back speed per motor path, as a fraction of full
         self.last_horn = -HORN_GAP
+        self.name = None         # the brick's hostname, read when connecting
         self.lock = threading.Lock()
 
     @property
@@ -200,10 +201,13 @@ class Brick:
         transport = client.get_transport()
         transport.set_keepalive(5)
         _, out, _ = client.exec_command(
+            'echo "name $(hostname)"; '
             'for m in /sys/class/tacho-motor/motor*; do [ -d "$m" ] && echo "$(cat $m/address) $m"; done')
-        paths = {}
+        paths, name = {}, None
         for line in out.read().decode().split("\n"):
-            if line.strip():
+            if line.startswith("name "):
+                name = line[5:].strip() or None   # the brick's own name, e.g. ev3kishan
+            elif line.strip():
                 addr, path = line.split()
                 paths[addr.split(":")[-1]] = path
         if not paths:
@@ -219,7 +223,7 @@ class Brick:
         mon.sendall(MONITOR_SETUP)
 
         with self.lock:
-            self.client, self.ctl, self.paths = client, ctl, paths
+            self.client, self.ctl, self.paths, self.name = client, ctl, paths, name
             self.mon, self.mon_out = mon, mon.makefile("r")
         # Brake gives a crisp stop on key release; restored to ev3dev's default on close.
         self.send(" ".join(f"echo brake > {p}/stop_action;" for p in self.paths.values()))

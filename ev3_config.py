@@ -40,6 +40,16 @@ def load():
     return config
 
 
+def saved_host():
+    """This laptop's brick as saved in the file (a command-line address doesn't count)."""
+    try:
+        with open(CONFIG_FILE, encoding="utf-8") as f:
+            host = json.load(f).get("host")
+    except (OSError, ValueError, AttributeError):
+        host = None
+    return host if isinstance(host, str) and host else DEFAULTS["host"]
+
+
 def ssh_address(host, port=22):
     """Where to open SSH to `host`: its first IPv4 address when it has one. Windows can list
     a .local name's IPv6 link-local address first, which ev3dev's SSH doesn't answer on, and

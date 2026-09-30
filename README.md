@@ -57,6 +57,14 @@ For the phone, the server picks a random free port (8000–8999) each time, or t
 `python ev3_phone.py --port 8090`. Open the `http://…:<port>` address it prints (the phone must be
 on the same Wi-Fi; allow Python through the firewall if asked).
 
+**Connecting over Wi-Fi or by IP address, from the phone:** tap **📶 Brick · Wi-Fi** (below the
+gears, or **Connect another way…** on the "Waiting for the robot" screen). Type the brick's name
+(like `ev3kishan`) or its IP address, which the brick's screen shows at the top, and tap
+**Connect**. Or tap **Find bricks on Wi-Fi** and pick one from the list. For Wi-Fi the brick
+needs a USB Wi-Fi dongle and must be on the same network as the PC (on the brick: Wireless and
+Networks → Wi-Fi). With **Remember on this PC** ticked, the desktop app uses that brick too.
+The search only reads each device's SSH greeting; it never logs in to anything.
+
 The phone can also set the robot up: tap **⚙ Setup · Calibrate** (below the gears). It has
 the same settings as the desktop's Setup card: which motor is each wheel, Invert, Swap,
 **Calibrate by driving** (tap Test next to each arrow, tap what the robot did, then Save),

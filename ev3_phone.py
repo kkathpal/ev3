@@ -15,14 +15,17 @@ the motors briefly (Turbo is covered by the brick-side watchdog), and this serve
 also stops the robot if a phone goes quiet for PHONE_TIMEOUT, so lifting your
 finger, locking the phone or losing Wi-Fi stops the robot.
 """
+import ipaddress
 import json
 import math
 import os
 import random
+import re
 import socket
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.machinery import SourceFileLoader
 
@@ -50,6 +53,8 @@ PORT_RANGE = (8000, 8999)   # each run uses a random free port from here (--port
 PAGE = os.path.join(HERE, "ev3_phone.html")
 PHONE_TIMEOUT = 0.35   # stop if the driving phone sends nothing for this long (s)
 DIRECTIONS = {"up", "down", "left", "right"}
+SCAN_PREFIX = 22       # Find bricks: search this size of network around each of the PC's addresses
+SCAN_TIMEOUT = 0.4     # ...waiting this long (s) for each address to answer
 
 
 def parse_stick(value):
@@ -83,6 +88,8 @@ class Controller:
         self.trip_cm = self.top_speed = 0.0
         self.last_pos = None
         self.telemetry = {}
+        self.brick_host = rc.HOST   # the address the current connection was made to
+        self.scan = {"running": False, "found": [], "error": ""}   # Find bricks on Wi-Fi
         threading.Thread(target=self._monitor, daemon=True).start()
         threading.Thread(target=self._safety, daemon=True).start()
 
@@ -243,8 +250,11 @@ class Controller:
     def _monitor(self):
         while True:
             try:
+                if self.brick.connected and self.brick_host != rc.HOST:
+                    self.brick.close()   # the phone picked another brick: stop this one and let it go
                 if not self.brick.connected:
-                    self.status = "Connecting…"
+                    self.status = f"Connecting to {rc.HOST}…"
+                    self.brick_host = rc.HOST
                     self.brick.connect()
                 self.readings = self.brick.read_motors()
                 self._check_ports()
@@ -258,7 +268,7 @@ class Controller:
             except Exception as e:
                 self.brick.ctl = None
                 self.brick.rtt = None
-                self.status = f"Brick disconnected: {e}"
+                self.status = f"Can't reach {rc.HOST}: {e}"
                 self._update_telemetry()
                 time.sleep(2)
                 continue
@@ -309,11 +319,53 @@ class Controller:
             "warning": warning,
         }
 
+    # ----- which brick (the phone's Connection screen) -----
+    def connect_to(self, address, remember=False):
+        """Switch to another brick by name or IP address (e.g. its Wi-Fi address). The monitor
+        then stops the old one's motors, lets it go and connects. Returns an error, or ""."""
+        address = address.strip() if isinstance(address, str) else ""
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,253}", address):
+            return "Type the brick's name (like ev3kishan) or its IP address (like 192.168.1.23)."
+        host = rc.ev3_config.brick_address(address)
+        with self.lock:
+            self.stop()
+            rc.HOST = host
+            self.status = f"Connecting to {host}…"
+            self.trip_cm = self.top_speed = 0.0
+            self.last_pos = None
+            self.telemetry = {**self.telemetry, "connected": False, "status": self.status}
+        if remember:
+            try:
+                rc.ev3_config.save_host(host)   # the desktop app and the next run use it too
+            except OSError as e:
+                return f"Connecting, but couldn't remember it: {e.strerror or e}"
+        return ""
+
+    def start_scan(self):
+        with self.lock:
+            if self.scan["running"]:
+                return
+            self.scan = {"running": True, "found": [], "error": ""}
+        threading.Thread(target=self._scan, daemon=True).start()
+
+    def _scan(self):
+        try:
+            found = find_bricks()
+            self.scan = {"running": False, "found": found,
+                         "error": "" if found else "No bricks found on this PC's networks."}
+        except Exception as e:
+            self.scan = {"running": False, "found": [], "error": f"Search failed: {e}"}
+
+    def _connection_state(self):
+        connected = self.brick.connected and self.status == "Connected"
+        return {"host": rc.HOST, "name": self.brick.name if connected else None,
+                "saved": rc.ev3_config.saved_host(), "scan": self.scan}
+
     def state(self):
         with self.lock:
             self._reload_settings()
             setup = self._setup_state()
-        return {**self.telemetry, "mode": self.mode, "setup": setup}
+        return {**self.telemetry, "mode": self.mode, "setup": setup, "connection": self._connection_state()}
 
 
 controller = None
@@ -383,6 +435,11 @@ class Handler(BaseHTTPRequestHandler):
             controller.update_setup(data)
         elif self.path == "/cal/test":
             controller.cal_test(data.get("arrow"))
+        elif self.path == "/connect":
+            error = controller.connect_to(data.get("address"), data.get("remember") is True)
+            return self._json({**controller.state(), "error": error})
+        elif self.path == "/scan":
+            controller.start_scan()
         elif self.path == "/cal/save":
             error = controller.save_calibration(data.get("choice"))
             return self._json({**controller.state(), "saved": not error, "error": error})
@@ -394,8 +451,9 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-def lan_addresses():
-    """This PC's addresses a phone on the same network could reach."""
+def lan_addresses(brick_link=False):
+    """This PC's addresses a phone on the same network could reach (with brick_link, also its
+    end of a Bluetooth link to a brick, 192.168.0.2, which phones can't reach)."""
     found = []
     try:   # the interface the default route uses (no packets are sent)
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -409,9 +467,54 @@ def lan_addresses():
         infos = []
     for info in infos:
         ip = info[4][0]
-        if ip not in found and not ip.startswith("127.") and ip != "192.168.0.2":   # skip the brick link
+        if ip not in found and not ip.startswith("127.") and (brick_link or ip != "192.168.0.2"):
             found.append(ip)
     return found
+
+
+def scan_networks():
+    """The networks to search for bricks: around each of this PC's private IPv4 addresses
+    (Wi-Fi, a Bluetooth or USB link), SCAN_PREFIX bits wide; not link-local or public ones."""
+    nets = []
+    for ip in lan_addresses(brick_link=True):
+        try:
+            net = ipaddress.ip_network(f"{ip}/{SCAN_PREFIX}", strict=False)
+        except ValueError:
+            continue
+        if net.is_private and not net.is_link_local and not net.is_loopback and net not in nets:
+            nets.append(net)
+    return nets
+
+
+def ssh_banner(ip):
+    """The SSH greeting at `ip`, or None. Reading it doesn't log in."""
+    try:
+        with socket.create_connection((ip, 22), timeout=SCAN_TIMEOUT) as s:
+            s.settimeout(1.5)
+            return s.recv(80).decode(errors="replace").strip()
+    except OSError:
+        return None
+
+
+def find_bricks():
+    """Bricks on this PC's networks: devices whose SSH greets like ev3dev's (Debian's OpenSSH).
+    Only the greeting is read, so the brick's password goes nowhere until one is picked."""
+    own = set(lan_addresses(brick_link=True))
+    hosts = [str(h) for net in scan_networks() for h in net.hosts() if str(h) not in own]
+    with ThreadPoolExecutor(128) as pool:
+        banners = list(pool.map(ssh_banner, hosts))
+        found = [ip for ip, banner in zip(hosts, banners) if banner and "Debian" in banner]
+        names = list(pool.map(device_name, found))
+    return [{"ip": ip, "name": name} for ip, name in zip(found, names)]
+
+
+def device_name(ip):
+    """The name the network knows `ip` by (e.g. ev3krutin), or None."""
+    try:
+        name = socket.gethostbyaddr(ip)[0]
+    except OSError:
+        return None
+    return name.split(".")[0] or None
 
 
 def start_server(wanted=None):
