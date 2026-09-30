@@ -259,18 +259,14 @@ class CameraTest(unittest.TestCase):
 
 class SessionTest(unittest.TestCase):
 
-    def test_fetch_reads_latest_under_the_users_home(self):
+    def test_fetch_reads_latest_from_the_bricks_ram(self):
         sftp = mock.Mock()
-        sftp.normalize.return_value = "/home/robot"
         sftp.open.return_value.__enter__ = lambda s: s
         sftp.open.return_value.__exit__ = mock.Mock(return_value=False)
         sftp.open.return_value.read.return_value = JPEG1
         session = cam.Session(mock.Mock(), sftp)
         self.assertEqual(session.fetch(), JPEG1)
-        sftp.normalize.assert_called_once_with(".")
-        sftp.open.assert_called_with("/home/robot/camera/latest.jpg", "rb")
-        session.fetch()
-        sftp.normalize.assert_called_once()   # the path is remembered
+        sftp.open.assert_called_with("/dev/shm/ev3-camera/latest.jpg", "rb")   # tmpfs, not the SD card
         session.close()
         self.assertTrue(session.channel.close.called)
         self.assertTrue(sftp.close.called)
@@ -304,7 +300,8 @@ class BrickScriptTest(unittest.TestCase):
         self.assertNotIn('f"', cam.BRICK_SCRIPT)
 
     def test_script_saves_where_the_pc_fetches(self):
-        self.assertIn('os.path.expanduser("~/%s")' % cam.REMOTE_DIR, cam.BRICK_SCRIPT)
+        self.assertIn('"%s"' % cam.REMOTE_DIR, cam.BRICK_SCRIPT)
+        self.assertTrue(cam.REMOTE_DIR.startswith("/dev/shm/"))
         self.assertIn('"%s"' % cam.REMOTE_FILE, cam.BRICK_SCRIPT)
         self.assertIn("os.rename(tmp, path)", cam.BRICK_SCRIPT)   # atomic replace
         self.assertIn('send(b"N"', cam.BRICK_SCRIPT)

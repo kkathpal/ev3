@@ -3,7 +3,7 @@
 Nothing is installed on the brick: over the SSH connection the drive apps already use, this
 runs a small pure-Python V4L2 capture script (BRICK_SCRIPT, Python 3.5 as on ev3dev). It asks
 the webcam for MJPEG (most UVC webcams offer it), keeps the stream draining, and every
-SNAP_SECONDS saves one JPEG to `~/camera/latest.jpg` on the brick's SD card (written to a temp
+SNAP_SECONDS saves one JPEG to `/dev/shm/ev3-camera/latest.jpg` in the brick's RAM (written to a temp
 file and renamed, so the PC never reads half a picture). Each save is announced on stdout as
 `kind(1 byte) + length(4 bytes, big-endian) + data`: kind "N" (data: the file size as digits),
 or "E" with an error message. `Camera` reads those on the PC, fetches the file over SFTP and
@@ -25,7 +25,7 @@ FPS = 5                    # frames per second asked for: the brick's USB 1.1 po
                            # webcam's default 30 fps, and then uvcvideo never completes a frame
 SNAP_SECONDS = 3           # one snapshot this often
 DEVICE = "/dev/video0"
-REMOTE_DIR = "camera"      # under the brick user's home (the SD card); BRICK_SCRIPT has the same
+REMOTE_DIR = "/dev/shm/ev3-camera"   # the brick's RAM (tmpfs), not the SD card; BRICK_SCRIPT has the same
 REMOTE_FILE = "latest.jpg"
 LINGER_SECONDS = 8         # keep capturing this long after the last viewer leaves (phones poll every 3 s)
 FRAME_TIMEOUT = 15         # no snapshot for this long (> SNAP_SECONDS): report the camera as stalled
@@ -35,7 +35,7 @@ MAX_FRAME = 2_000_000      # sanity limit on one JPEG
 BRICK_SCRIPT = r'''
 import fcntl, mmap, os, select, struct, sys, time
 W, H, SNAP, DEV, FPS = int(sys.argv[1]), int(sys.argv[2]), float(sys.argv[3]), sys.argv[4], int(sys.argv[5])
-DIR, FILE, WARMUP = os.path.expanduser("~/camera"), "latest.jpg", 3
+DIR, FILE, WARMUP = "/dev/shm/ev3-camera", "latest.jpg", 3
 out = sys.stdout.buffer
 def send(kind, data=b""):
     out.write(kind + struct.pack(">I", len(data)) + data)
@@ -71,6 +71,10 @@ try:   # every other failure is sent to the PC too, not just to a stderr nobody 
         pass
     os.makedirs(DIR, exist_ok=True)
     path, tmp = os.path.join(DIR, FILE), os.path.join(DIR, FILE + ".tmp")
+    try:
+        os.remove(path)   # no picture from an earlier run is left in RAM to be mistaken for a new one
+    except OSError:
+        pass
     req = bytearray(struct.pack("=III", 4, 1, 1).ljust(20, b"\0"))
     fcntl.ioctl(fd, REQBUFS, req, True)
     count = struct.unpack_from("=I", req, 0)[0]
@@ -264,7 +268,7 @@ class Session:
     """The brick script's channel plus an SFTP client to fetch the snapshot it announces."""
 
     def __init__(self, channel, sftp):
-        self.channel, self.sftp, self.path = channel, sftp, None
+        self.channel, self.sftp = channel, sftp
 
     def settimeout(self, seconds):
         self.channel.settimeout(seconds)
@@ -273,9 +277,7 @@ class Session:
         return self.channel.recv(n)
 
     def fetch(self):
-        if self.path is None:   # the user's home, however the login names it
-            self.path = self.sftp.normalize(".") + "/" + REMOTE_DIR + "/" + REMOTE_FILE
-        with self.sftp.open(self.path, "rb") as f:
+        with self.sftp.open(REMOTE_DIR + "/" + REMOTE_FILE, "rb") as f:
             return f.read()
 
     def close(self):
