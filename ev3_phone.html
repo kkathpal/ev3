@@ -66,6 +66,16 @@
   button { font: inherit; color: var(--fg); background: var(--tile); border: 0; border-radius: 10px; }
   .small { padding: 7px 12px; font-size: 12px; }
 
+  /* Camera card: off by default; snapshots are only fetched (the brick only captures) while it's on */
+  .cam { margin-top: 10px; }
+  .cam .setupbtn { margin-top: 0; }
+  .cam.on .setupbtn { color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .cam img { display: none; width: 100%; aspect-ratio: 4 / 3; object-fit: contain; margin-top: 10px;
+    border-radius: 10px; background: var(--tile); }
+  .cam.on img { display: block; }
+  .cam .camstatus { display: none; color: var(--muted); font-size: 11px; margin: 6px 0 0; }
+  .cam.on .camstatus { display: block; }
+
   .pad { width: min(100%, 300px, 34vh); margin: 0 auto; touch-action: none; }
   /* Joystick: the knob follows the thumb up to STICK_TRAVEL of the width from the centre */
   .stick { position: relative; width: 100%; aspect-ratio: 1; border-radius: 50%; touch-action: none;
@@ -182,6 +192,11 @@
       <div><span class="caps">Trip</span><b id="trip">0 cm</b></div>
       <div><span class="caps">Top speed</span><b id="top">0 cm/s</b></div>
       <button class="small" id="reset">Reset</button>
+    </div>
+    <div class="card cam" id="camCard">
+      <button class="setupbtn" id="camToggle">📷 Camera</button>
+      <img id="cam" alt="camera">
+      <p class="camstatus" id="camStatus"></p>
     </div>
   </section>
 
@@ -473,7 +488,80 @@ function show(s) {
   $("trip").textContent = s.trip_cm >= 100 ? (s.trip_cm / 100).toFixed(2) + " m" : Math.round(s.trip_cm || 0) + " cm";
   $("top").textContent = Math.round(s.top_speed || 0) + " cm/s";
   $("warn").textContent = s.warning || "";
+  paintCam(s.camera);
 }
+
+// ---------- Camera (the brick's USB webcam: a snapshot from /camera.jpg every few seconds) ----------
+// One request at a time; the next one is scheduled only after the previous one finished, so a
+// slow brick or Wi-Fi never piles up requests. Nothing is fetched while the card is off or the
+// page is hidden, and the PC stops the capture a few seconds after the last request.
+const CAM_DEFAULT_MS = 3000;
+let camOn = false, camTimer = null, camAbort = null, camUrl = null, camShown = 0, camError = "";
+function camInterval() {
+  const c = last.camera;
+  return c && c.interval > 0 ? c.interval * 1000 : CAM_DEFAULT_MS;
+}
+function camSchedule(ms) {
+  clearTimeout(camTimer);
+  camTimer = setTimeout(camFetch, ms);
+}
+async function camFetch() {
+  clearTimeout(camTimer); camTimer = null;
+  if (!camOn || document.hidden || camAbort) return;
+  const ctl = camAbort = new AbortController();
+  try {
+    const r = await fetch("/camera.jpg?t=" + Date.now(), { signal: ctl.signal, cache: "no-store" });
+    if (!r.ok) throw new Error(r.status === 503 ? "" : "HTTP " + r.status);
+    const url = URL.createObjectURL(await r.blob());
+    await new Promise((ok, fail) => {
+      const img = new Image();   // decode offscreen, so the old picture stays until the new one is ready
+      img.onload = ok; img.onerror = () => fail(new Error("Bad picture"));
+      img.src = url;
+    }).then(() => {
+      if (camUrl) URL.revokeObjectURL(camUrl);
+      camUrl = url; $("cam").src = url;
+      camShown = Date.now(); camError = "";
+    }, e => { URL.revokeObjectURL(url); throw e; });
+  } catch (e) {
+    if (ctl.signal.aborted) return;   // toggled off or hidden: no retry
+    camError = e.message || "";   // "" for 503: the brick's own status says why (paintCam)
+  } finally {
+    if (camAbort === ctl) camAbort = null;
+  }
+  paintCam(last.camera);
+  if (camOn && !document.hidden) camSchedule(camInterval());
+}
+function camStop() {   // cancel the timer and any request in flight; the PC stops the capture on its own
+  clearTimeout(camTimer); camTimer = null;
+  if (camAbort) { camAbort.abort(); camAbort = null; }
+}
+function camClear() {
+  camStop();
+  $("cam").removeAttribute("src");
+  if (camUrl) URL.revokeObjectURL(camUrl);
+  camUrl = null; camShown = 0; camError = "";
+}
+function toggleCam() {
+  camOn = !camOn;
+  $("camCard").classList.toggle("on", camOn);
+  camOn ? camFetch() : camClear();
+  paintCam(last.camera);
+}
+function paintCam(c) {
+  if (!camOn) return;
+  const sec = camInterval() / 1000;
+  const every = `Snapshot every ${sec % 1 ? sec.toFixed(1) : sec} s`;
+  let text;
+  if (camShown) text = `${every} · updated ${Math.max(0, Math.round((Date.now() - camShown) / 1000))}s ago`;
+  else text = camError || (c && c.status) || "Starting…";
+  $("camStatus").textContent = text;
+}
+$("camToggle").addEventListener("click", toggleCam);
+setInterval(() => { if (camOn && camShown) paintCam(last.camera); }, 1000);   // the "…s ago" counter
+document.addEventListener("visibilitychange", () => {   // don't fetch for a phone in a pocket
+  if (!camOn) return;
+  document.hidden ? camStop() : camFetch();
+});
 function meter(side, v, max) {
   const f = Math.max(-1, Math.min(1, v / max)), el = $("bar" + side);
   el.style.top = f >= 0 ? (50 - f * 50) + "%" : "50%";

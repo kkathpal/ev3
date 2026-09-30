@@ -131,6 +131,16 @@ speaker (EV3 RC also has a **HORN** button):
   loud clips work best).
 - **Volume** − / +: the brick's speaker volume.
 
+## Camera
+
+Plug a USB webcam into the brick's USB port (any ordinary UVC webcam; it must offer MJPEG, which
+nearly all do) and tap **📷 Camera** on the phone page to see what the robot sees: a small
+snapshot every 3 seconds (the brick is slow; a live stream would starve driving). The brick
+saves each picture to `~/camera/latest.jpg` on its SD card and the PC fetches it over SFTP.
+Nothing needs installing on the brick, and the camera only runs while someone is watching. If
+nothing shows, check that the brick sees the camera: over SSH, `ls /dev/video0` should list it;
+the card's status line says what went wrong (for example a camera without MJPEG).
+
 ## EV3 programs
 
 The `programs` folder holds EV3 MicroPython programs that run on the brick itself, one folder
@@ -181,5 +191,5 @@ them all be reachable at once.
 
 ## Tests
 
-`python -m unittest discover -s tests -v` checks the driving logic, the phone controller and the
-brick setup script without a robot.
+`python -m unittest discover -s tests -v` checks the driving logic, the phone controller, the
+camera snapshots and the brick setup script without a robot.

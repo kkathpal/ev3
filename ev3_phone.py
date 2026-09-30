@@ -48,6 +48,7 @@ def take_port_arg():
 
 PORT_ARG = take_port_arg()
 rc = SourceFileLoader("ev3_drive", os.path.join(HERE, "ev3_drive.pyw")).load_module()
+import ev3_camera   # noqa: E402  (after rc: ev3_config must read the address first)
 
 PORT_RANGE = (8000, 8999)   # each run uses a random free port from here (--port N picks one)
 PAGE = os.path.join(HERE, "ev3_phone.html")
@@ -90,6 +91,8 @@ class Controller:
         self.telemetry = {}
         self.brick_host = rc.HOST   # the address the current connection was made to
         self.scan = {"running": False, "found": [], "error": ""}   # Find bricks on Wi-Fi
+        # Webcam snapshots for the phone page; captures only while a phone keeps asking (/camera.jpg)
+        self.camera = ev3_camera.Camera(lambda: ev3_camera.open_channel(self.brick.client))
         threading.Thread(target=self._monitor, daemon=True).start()
         threading.Thread(target=self._safety, daemon=True).start()
 
@@ -365,7 +368,8 @@ class Controller:
         with self.lock:
             self._reload_settings()
             setup = self._setup_state()
-        return {**self.telemetry, "mode": self.mode, "setup": setup, "connection": self._connection_state()}
+        return {**self.telemetry, "mode": self.mode, "setup": setup, "connection": self._connection_state(),
+                "camera": self.camera.state()}
 
 
 controller = None
@@ -406,8 +410,25 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif self.path == "/state":
             self._json(controller.state())
+        elif self.path.split("?")[0] == "/camera.jpg":
+            self._camera()
         else:
             self.send_error(404)
+
+    def _camera(self):
+        """One snapshot: the newest frame (the first one may take a few seconds to arrive). The
+        phone asks again every few seconds; the capture stops once it has stopped asking.
+        Doesn't take controller.lock: driving must never wait for a frame."""
+        with controller.camera.viewing():
+            jpeg = controller.camera.latest(timeout=10)
+        if jpeg is None:
+            return self.send_error(503, "No picture yet", controller.camera.state()["status"])
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(jpeg)))
+        self.end_headers()
+        self.wfile.write(jpeg)
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
